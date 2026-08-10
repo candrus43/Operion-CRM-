@@ -37,6 +37,17 @@ export const STAGE_PROBABILITY: Record<string, number> = {
   "Closed Lost": 0,
 };
 
+/**
+ * Commission rate on Closed Won deals — a flat 25% of the COLLECTED setup fee.
+ * Commission is computed from the plan only, never typed (see `commissionFor`).
+ */
+export const COMMISSION_RATE = 0.25;
+
+/** Agent commission for a plan = 25% of the plan's setup fee (Founder 625, Studio 1250). */
+export function commissionFor(plan: Plan): number {
+  return PLAN_PRICING[plan].setupFee * COMMISSION_RATE;
+}
+
 /** Annual value = MRR × 12. Always computed, never stored. */
 export function annualValue(plan: Plan): number {
   return PLAN_PRICING[plan].mrr * 12;

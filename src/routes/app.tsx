@@ -17,6 +17,7 @@ const NAV = [
   { to: "/app/contacts", label: "Contacts", icon: "contacts" },
   { to: "/app/resources", label: "Resources", icon: "resources" },
   { to: "/app/reports", label: "Reports", icon: "reports" },
+  { to: "/app/commissions", label: "Commissions", icon: "commissions" },
 ] as const;
 
 function NavIcon({ icon }: { icon: string }) {
@@ -61,6 +62,13 @@ function NavIcon({ icon }: { icon: string }) {
         <svg {...common} aria-hidden="true">
           <path d="M3 3v18h18" />
           <path d="M7 15l4-6 4 3 5-7" />
+        </svg>
+      );
+    case "commissions":
+      return (
+        <svg {...common} aria-hidden="true">
+          <path d="M12 2v20" />
+          <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
         </svg>
       );
     default:

@@ -13,7 +13,15 @@ import { createServerFn } from "@tanstack/react-start";
 import { sql } from "~/db";
 import { dealQueryScope, type DealQueryScope } from "./auth";
 import { readSession, type SessionUser } from "./auth-core";
-import { PLAN_PRICING, annualValue, firstYearValue, isPlan, type Plan } from "./pricing";
+import {
+  COMMISSION_RATE,
+  PLAN_PRICING,
+  annualValue,
+  commissionFor,
+  firstYearValue,
+  isPlan,
+  type Plan,
+} from "./pricing";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -54,6 +62,10 @@ export interface Deal {
   annual: number;
   /** Computed from the plan (setup + annual) — never stored. */
   firstYear: number;
+  /** True once the Closed Won deal's setup fee was collected (commission earned). */
+  setup_fee_collected: boolean;
+  /** When the setup fee was marked collected (null until collected). */
+  setup_fee_collected_at: string | null;
   stage: Stage;
   owner_id: string | null;
   owner_name: string | null;
@@ -135,6 +147,11 @@ function coerceDeal(r: Record<string, unknown>): Deal {
     mrr: pricing.mrr,
     annual: annualValue(plan),
     firstYear: firstYearValue(plan),
+    setup_fee_collected: r.setup_fee_collected === true || r.setup_fee_collected === "true",
+    setup_fee_collected_at:
+      r.setup_fee_collected_at == null
+        ? null
+        : new Date(r.setup_fee_collected_at as Date).toISOString(),
     stage: String(r.stage) as Stage,
     owner_id: r.owner_id == null ? null : String(r.owner_id),
     owner_name: r.owner_name == null ? null : String(r.owner_name),
@@ -635,3 +652,243 @@ export const markWon = createServerFn({ method: "POST" })
       return { ok: false, reason: "db-error", message: "Something went wrong. Please try again." };
     }
   });
+
+/* ------------------------------------------------------------------ */
+/* Commission tracking (25% of the collected setup fee per Closed Won) */
+/* ------------------------------------------------------------------ */
+
+export type MarkSetupFeeResult =
+  | { ok: true; deal: Deal }
+  | { ok: false; reason: DbStatus | "not-won"; message: string };
+
+/**
+ * Mark a Closed Won deal's setup fee as collected. The deal owner (agent) marks
+ * their own deal once they collect payment from the customer; the owner can
+ * mark any deal. Commission is 25% of the setup fee — computed from the plan in
+ * code, never typed. Returns the updated deal (with the new collection state).
+ */
+export const markSetupFeeCollected = createServerFn({ method: "POST" })
+  .validator((d: { dealId: string }) => d)
+  .handler(async ({ data }): Promise<MarkSetupFeeResult> => {
+    if (!process.env.DATABASE_URL) {
+      return { ok: false, reason: "db-not-connected", message: "Database is not connected yet." };
+    }
+    try {
+      const user = await readSession();
+      if (!user) {
+        return {
+          ok: false,
+          reason: "not-signed-in",
+          message: "Your session expired. Please sign in again.",
+        };
+      }
+      const db = sql();
+      const row = await fetchOwnedDeal(db, user, data.dealId);
+      if (!row) {
+        return { ok: false, reason: "forbidden", message: "You don't have permission to do that." };
+      }
+      if (String(row.stage) !== "Closed Won") {
+        return {
+          ok: false,
+          reason: "not-won",
+          message: "Only Closed Won deals earn commission — move the deal to Closed Won first.",
+        };
+      }
+
+      await db`
+        update deals
+        set setup_fee_collected = true, setup_fee_collected_at = now(), updated_at = now()
+        where id = ${data.dealId}
+      `;
+      const dealRows = await db`
+        select d.*, u.name as owner_name
+        from deals d left join users u on u.id = d.owner_id
+        where d.id = ${data.dealId}
+        limit 1
+      `;
+      return { ok: true, deal: coerceDeal(dealRows[0] as Record<string, unknown>) };
+    } catch (err) {
+      console.error("[operion-crm] markSetupFeeCollected failed:", err);
+      return { ok: false, reason: "db-error", message: "Something went wrong. Please try again." };
+    }
+  });
+
+export type UnmarkSetupFeeResult =
+  | { ok: true; deal: Deal }
+  | { ok: false; reason: DbStatus | "not-won" | "owner-only"; message: string };
+
+/**
+ * Undo a setup-fee collection mark. OWNER-ONLY: agents get a clear "only the
+ * owner can undo this" error. Resets both fields (collected flag + timestamp).
+ */
+export const unmarkSetupFeeCollected = createServerFn({ method: "POST" })
+  .validator((d: { dealId: string }) => d)
+  .handler(async ({ data }): Promise<UnmarkSetupFeeResult> => {
+    if (!process.env.DATABASE_URL) {
+      return { ok: false, reason: "db-not-connected", message: "Database is not connected yet." };
+    }
+    try {
+      const user = await readSession();
+      if (!user) {
+        return {
+          ok: false,
+          reason: "not-signed-in",
+          message: "Your session expired. Please sign in again.",
+        };
+      }
+      if (user.role !== "owner") {
+        return {
+          ok: false,
+          reason: "owner-only",
+          message: "Only the owner can undo a collected mark.",
+        };
+      }
+      const db = sql();
+      const row = await fetchOwnedDeal(db, user, data.dealId);
+      if (!row) {
+        return { ok: false, reason: "forbidden", message: "You don't have permission to do that." };
+      }
+
+      await db`
+        update deals
+        set setup_fee_collected = false, setup_fee_collected_at = null, updated_at = now()
+        where id = ${data.dealId}
+      `;
+      const dealRows = await db`
+        select d.*, u.name as owner_name
+        from deals d left join users u on u.id = d.owner_id
+        where d.id = ${data.dealId}
+        limit 1
+      `;
+      return { ok: true, deal: coerceDeal(dealRows[0] as Record<string, unknown>) };
+    } catch (err) {
+      console.error("[operion-crm] unmarkSetupFeeCollected failed:", err);
+      return { ok: false, reason: "db-error", message: "Something went wrong. Please try again." };
+    }
+  });
+
+/** One commission ledger row (Closed Won deals only). */
+export interface CommissionRow {
+  dealId: string;
+  company: string;
+  plan: Plan;
+  setupFee: number;
+  /** 25% of the setup fee — computed from the plan, never stored. */
+  commission: number;
+  collected: boolean;
+  collectedAt: string | null;
+  ownerId: string;
+  ownerName: string;
+}
+
+/** Per-agent (or per-user) commission totals. */
+export interface CommissionTotals {
+  pendingCommission: number;
+  earnedCommission: number;
+  dealCount: number;
+}
+
+/** Per-agent commission summary card data (owner view). */
+export interface AgentCommissionSummary {
+  id: string;
+  name: string;
+  totals: CommissionTotals;
+}
+
+export type CommissionSummaryResult =
+  | {
+      ok: true;
+      rows: CommissionRow[];
+      /** Overall totals: owner sees the whole team, agents see only their own. */
+      totals: CommissionTotals;
+      /** Per-agent summaries (role = 'agent', zeros included) — owner only. */
+      agents: AgentCommissionSummary[] | null;
+    }
+  | { ok: false; reason: DbStatus };
+
+/**
+ * Commission ledger for the current user: owner sees every Closed Won deal
+ * (grouped per agent via `agents`), an agent sees only their own. Commission is
+ * 25% of the plan's setup fee, computed here from pricing — never typed. Rows
+ * order: collected deals first (newest collection), then uncollected by recency.
+ */
+export const commissionSummary = createServerFn({ method: "POST" }).handler(
+  async (): Promise<CommissionSummaryResult> => {
+    if (!process.env.DATABASE_URL) return { ok: false, reason: "db-not-connected" };
+    try {
+      const user = await readSession();
+      if (!user) return { ok: false, reason: "not-signed-in" };
+      const db = sql();
+      const rows = await db`
+        select d.id as deal_id, d.company, d.plan, d.owner_id, d.setup_fee_collected,
+               d.setup_fee_collected_at, d.updated_at, u.name as owner_name
+        from deals d left join users u on u.id = d.owner_id
+        where d.stage = 'Closed Won'
+          and (${user.role} = 'owner' or d.owner_id = ${user.id})
+        order by d.setup_fee_collected_at desc nulls last, d.updated_at desc
+      `;
+
+      const ledger: CommissionRow[] = rows.map((r) => {
+        const plan = isPlan(r.plan) ? r.plan : "Founder";
+        const collected = r.setup_fee_collected === true || r.setup_fee_collected === "true";
+        return {
+          dealId: String(r.deal_id),
+          company: String(r.company),
+          plan,
+          setupFee: PLAN_PRICING[plan].setupFee,
+          commission: commissionFor(plan),
+          collected,
+          collectedAt:
+            r.setup_fee_collected_at == null
+              ? null
+              : new Date(r.setup_fee_collected_at as Date).toISOString(),
+          ownerId: r.owner_id == null ? "" : String(r.owner_id),
+          ownerName: r.owner_name == null ? "Unassigned" : String(r.owner_name),
+        };
+      });
+
+      const totals: CommissionTotals = ledger.reduce(
+        (acc, row) => {
+          if (row.collected) acc.earnedCommission += row.commission;
+          else acc.pendingCommission += row.commission;
+          acc.dealCount += 1;
+          return acc;
+        },
+        { pendingCommission: 0, earnedCommission: 0, dealCount: 0 },
+      );
+
+      // Owner view: per-agent summaries. Every role='agent' user appears (zeros
+      // included); a Closed Won deal owned by the owner themselves is shown under
+      // the owner's name, not an agent.
+      let agents: AgentCommissionSummary[] | null = null;
+      if (user.role === "owner") {
+        const userRows = await db`select id, name, role from users order by name asc`;
+        const byOwner = new Map<string, CommissionTotals>();
+        for (const row of ledger) {
+          const key = row.ownerId || "unassigned";
+          const cur = byOwner.get(key) ?? { pendingCommission: 0, earnedCommission: 0, dealCount: 0 };
+          if (row.collected) cur.earnedCommission += row.commission;
+          else cur.pendingCommission += row.commission;
+          cur.dealCount += 1;
+          byOwner.set(key, cur);
+        }
+        agents = userRows
+          .filter((u) => String(u.role) === "agent")
+          .map((u) => ({
+            id: String(u.id),
+            name: String(u.name),
+            totals: byOwner.get(String(u.id)) ?? {
+              pendingCommission: 0,
+              earnedCommission: 0,
+              dealCount: 0,
+            },
+          }));
+      }
+
+      return { ok: true, rows: ledger, totals, agents: agents ?? null };
+    } catch (err) {
+      console.error("[operion-crm] commissionSummary failed:", err);
+      return { ok: false, reason: "db-error" };
+    }
+  },
+);

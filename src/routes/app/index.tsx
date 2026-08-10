@@ -7,8 +7,10 @@ import {
   getDealDetail,
   listDeals,
   listUsers,
+  markSetupFeeCollected,
   markWon,
   moveDealStage,
+  unmarkSetupFeeCollected,
   updateDeal,
   type Activity,
   type Deal,
@@ -23,6 +25,7 @@ import {
   PLANS,
   PLAN_PRICING,
   annualValue,
+  commissionFor,
   firstYearValue,
   type Plan,
 } from "~/lib/pricing";
@@ -72,6 +75,14 @@ function formatUSD(v: number | null | undefined): string {
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(v);
+}
+
+/** Compact date for badges (e.g. "Aug 7, 2025"). */
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "—";
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 function relTime(iso: string | null | undefined): string {
@@ -896,6 +907,8 @@ function DealDetailDrawer({
   const [markWonOpen, setMarkWonOpen] = useState(false);
   const [markWonBusy, setMarkWonBusy] = useState(false);
   const [markWonError, setMarkWonError] = useState<string | null>(null);
+  const [feeBusy, setFeeBusy] = useState(false);
+  const [feeError, setFeeError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -957,6 +970,50 @@ function DealDetailDrawer({
       setMarkWonError("Something went wrong. Please try again.");
     } finally {
       setMarkWonBusy(false);
+    }
+  }
+
+  /** Mark the Closed Won deal's setup fee as collected (commission earned). */
+  async function handleMarkFeeCollected() {
+    if (state.status !== "ready" || feeBusy) return;
+    setFeeBusy(true);
+    setFeeError(null);
+    try {
+      const res = await markSetupFeeCollected({ data: { dealId } });
+      if (!res.ok) {
+        if (res.reason === "not-signed-in") window.location.assign("/");
+        else setFeeError(res.message);
+        return;
+      }
+      setState((s) => (s.status === "ready" ? { ...s, deal: res.deal } : s));
+      notify("Setup fee marked collected — commission earned");
+      onChanged();
+    } catch {
+      setFeeError("Something went wrong. Please try again.");
+    } finally {
+      setFeeBusy(false);
+    }
+  }
+
+  /** Owner-only: undo a collected mark. */
+  async function handleUnmarkFee() {
+    if (state.status !== "ready" || feeBusy) return;
+    setFeeBusy(true);
+    setFeeError(null);
+    try {
+      const res = await unmarkSetupFeeCollected({ data: { dealId } });
+      if (!res.ok) {
+        if (res.reason === "not-signed-in") window.location.assign("/");
+        else setFeeError(res.message);
+        return;
+      }
+      setState((s) => (s.status === "ready" ? { ...s, deal: res.deal } : s));
+      notify("Setup fee mark undone");
+      onChanged();
+    } catch {
+      setFeeError("Something went wrong. Please try again.");
+    } finally {
+      setFeeBusy(false);
     }
   }
 
@@ -1099,6 +1156,82 @@ function DealDetailDrawer({
                       Add a contact email to send a payment link.
                     </p>
                   )}
+                </div>
+              ) : null}
+
+              {/* Commission — 25% of the collected setup fee (Closed Won only) */}
+              {state.deal.stage === "Closed Won" ? (
+                <div className="mt-3 rounded-2xl border border-emerald-400/20 bg-emerald-500/[0.05] p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
+                      Commission
+                    </p>
+                    <span className="text-[13px] font-semibold tabular-nums text-emerald-300">
+                      {formatUSD(commissionFor(state.deal.plan))}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[13px] text-fg">
+                    {formatUSD(commissionFor(state.deal.plan))} · 25% of{" "}
+                    {formatUSD(state.deal.setupFee)} setup fee
+                  </p>
+                  {state.deal.setup_fee_collected ? (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-400/15 px-3 py-1 text-[12px] font-medium text-emerald-300 ring-1 ring-inset ring-emerald-400/25">
+                        {Icons.check}
+                        Collected {formatDate(state.deal.setup_fee_collected_at)}
+                      </span>
+                      {me.role === "owner" ? (
+                        <button
+                          type="button"
+                          onClick={handleUnmarkFee}
+                          disabled={feeBusy}
+                          className="btn-ghost h-8 px-3 text-[12px]"
+                        >
+                          Undo
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleMarkFeeCollected}
+                        disabled={feeBusy}
+                        className="btn-primary mt-3 w-full"
+                      >
+                        {feeBusy ? (
+                          <>
+                            <span
+                              aria-hidden="true"
+                              className="h-4 w-4 animate-spin rounded-full border-2 border-black/20 border-t-black"
+                            />
+                            Saving…
+                          </>
+                        ) : (
+                          <>
+                            {Icons.check}
+                            Mark setup fee collected
+                          </>
+                        )}
+                      </button>
+                      <p className="mt-2 text-center text-[11px] leading-relaxed text-white/35">
+                        Mark once the customer pays the {formatUSD(state.deal.setupFee)} setup
+                        fee — this deal earns{" "}
+                        <span className="text-emerald-300/80">
+                          {formatUSD(commissionFor(state.deal.plan))}
+                        </span>{" "}
+                        in commission.
+                      </p>
+                    </>
+                  )}
+                  {feeError ? (
+                    <p
+                      role="alert"
+                      className="mt-3 rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-[13px] leading-relaxed text-red-300"
+                    >
+                      {feeError}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
 

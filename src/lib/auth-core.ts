@@ -141,6 +141,13 @@ export const SCHEMA_SQL = `
   -- safety - do NOT drop it.
   ALTER TABLE deals ADD COLUMN IF NOT EXISTS plan text NOT NULL DEFAULT 'Founder' CHECK (plan IN ('Founder','Studio'));
 
+  -- Commission tracking on Closed Won deals - 25% of the COLLECTED setup fee.
+  -- The deal owner marks the setup fee collected once they collect it from the
+  -- customer - the owner can mark any deal and can undo any mark (agents cannot
+  -- undo). Idempotent so it also upgrades databases created before these columns.
+  ALTER TABLE deals ADD COLUMN IF NOT EXISTS setup_fee_collected boolean NOT NULL DEFAULT false;
+  ALTER TABLE deals ADD COLUMN IF NOT EXISTS setup_fee_collected_at timestamptz;
+
   CREATE TABLE IF NOT EXISTS resources (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
@@ -389,6 +396,13 @@ async function seedDemoDeals(
       (${ids.bluebird},  'stage',  'Closed Won — contract signed',             ${agentId}, ${daysAgo(7)}),
       (${ids.summit},    'note',   'Lost to competitor on price',              ${ownerId}, ${daysAgo(20)}),
       (${ids.summit},    'stage',  'Closed Lost',                              ${ownerId}, ${daysAgo(20, 1)})
+  `;
+
+  // Demo commission: Bluebird (Closed Won, Founder) already collected its setup
+  // fee 3 days ago, so fresh installs show one earned commission ($625).
+  await db`
+    update deals set setup_fee_collected = true, setup_fee_collected_at = ${daysAgo(3)}
+    where id = ${ids.bluebird}
   `;
 
   // Keep last_activity_at in sync with each deal's most recent activity.
