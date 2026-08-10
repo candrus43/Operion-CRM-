@@ -161,26 +161,26 @@ function scopedWithFilters(user: SessionUser, f: DealFilters): DealQueryScope {
   const next = () => scope.args.length + extraArgs.length + 1;
 
   if (f.agentId) {
-    extra.push(`owner_id = ${next()}`);
+    extra.push(`owner_id = $${next()}`);
     extraArgs.push(f.agentId);
   }
   if (f.stage) {
-    extra.push(`stage = ${next()}`);
+    extra.push(`stage = $${next()}`);
     extraArgs.push(f.stage);
   }
   if (f.plan) {
-    extra.push(`plan = ${next()}`);
+    extra.push(`plan = $${next()}`);
     extraArgs.push(f.plan);
   }
   // MRR is derived from the plan in code (not a column), so match it with a
   // CASE expression over the plan constants — Founder 249 / Studio 499.
   const mrrExpr = `case plan when 'Founder' then ${PLAN_PRICING.Founder.mrr} else ${PLAN_PRICING.Studio.mrr} end`;
   if (f.minMrr != null && Number.isFinite(f.minMrr)) {
-    extra.push(`${mrrExpr} >= ${next()}`);
+    extra.push(`${mrrExpr} >= $${next()}`);
     extraArgs.push(f.minMrr);
   }
   if (f.maxMrr != null && Number.isFinite(f.maxMrr)) {
-    extra.push(`${mrrExpr} <= ${next()}`);
+    extra.push(`${mrrExpr} <= $${next()}`);
     extraArgs.push(f.maxMrr);
   }
 
