@@ -909,6 +909,7 @@ function DealDetailDrawer({
   const [markWonError, setMarkWonError] = useState<string | null>(null);
   const [feeBusy, setFeeBusy] = useState(false);
   const [feeError, setFeeError] = useState<string | null>(null);
+  const [stageMoveBusy, setStageMoveBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -971,6 +972,22 @@ function DealDetailDrawer({
     } finally {
       setMarkWonBusy(false);
     }
+  }
+
+  /** Quick-jump "move to" — same server path as a drag, so semantics match. */
+  async function handleStageMove(next: Stage) {
+    if (state.status !== "ready" || stageMoveBusy || next === state.deal.stage) return;
+    setStageMoveBusy(true);
+    const res = await moveDealStage({ data: { dealId: state.deal.id, stage: next } });
+    setStageMoveBusy(false);
+    if (!res.ok) {
+      if (res.reason === "not-signed-in") window.location.assign("/");
+      else notify(friendlyError(res.reason));
+      return;
+    }
+    setState((s) => (s.status === "ready" ? { ...s, deal: { ...s.deal, stage: next } } : s));
+    notify(`Moved to ${next}`);
+    onChanged();
   }
 
   /** Mark the Closed Won deal's setup fee as collected (commission earned). */
@@ -1082,6 +1099,31 @@ function DealDetailDrawer({
                     {state.deal.owner_name || (me.role === "owner" ? "Unassigned" : "You")}
                   </p>
                 </div>
+              </div>
+
+              {/* Quick-jump — move straight to any stage without a full-board drag */}
+              <div className="glass mt-3 flex items-center justify-between gap-3 rounded-2xl p-4">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
+                    Move to stage
+                  </p>
+                  <p className="mt-1 truncate text-[11px] leading-relaxed text-white/30">
+                    Shortcut for long jumps — same as dragging the card.
+                  </p>
+                </div>
+                <select
+                  value={state.deal.stage}
+                  onChange={(e) => void handleStageMove(e.target.value as Stage)}
+                  disabled={stageMoveBusy}
+                  className="select-dark select-dark-sm w-40 shrink-0"
+                  aria-label="Move deal to stage"
+                >
+                  {STAGES.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               {/* Operion subscription pricing — computed from the plan */}
@@ -1600,6 +1642,65 @@ function PipelinePage() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<Stage | null>(null);
+  // Auto-scroll during card drag: the horizontally scrollable board container,
+  // the pointer's latest clientX (updated by a document-level dragover
+  // listener), and the rAF loop id driving the scroll.
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const pointerXRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+
+  /** Stops the auto-scroll loop (idempotent — called from drop and dragend). */
+  const stopAutoScroll = useCallback(() => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    pointerXRef.current = null;
+  }, []);
+
+  /**
+   * rAF loop that scrolls the board horizontally while the pointer sits within
+   * ~100px of the container's left/right edge. Runs for the whole drag (started
+   * on dragstart, stopped on drop/dragend); when the pointer is outside the
+   * edge zones it simply doesn't scroll, so entering a zone resumes instantly.
+   */
+  const startAutoScroll = useCallback(() => {
+    stopAutoScroll();
+    const EDGE_ZONE = 100; // px from the container edge that triggers scrolling
+    const EDGE_SPEED = 12; // px per animation frame (~720px/s at 60fps)
+    const loop = () => {
+      const board = boardRef.current;
+      const x = pointerXRef.current;
+      if (board && x != null) {
+        const rect = board.getBoundingClientRect();
+        if (x < rect.left + EDGE_ZONE) {
+          board.scrollLeft -= EDGE_SPEED;
+        } else if (x > rect.right - EDGE_ZONE) {
+          board.scrollLeft += EDGE_SPEED;
+        }
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+  }, [stopAutoScroll]);
+
+  // While a card is being dragged, track the pointer's X from every dragover
+  // event (they fire continuously on whatever element is under the pointer and
+  // bubble to document — including over the board gaps). Also stop the loop if
+  // the drag is cancelled anywhere (Escape / window dragend).
+  useEffect(() => {
+    if (!draggingId) return;
+    const onDragOver = (e: DragEvent) => {
+      pointerXRef.current = e.clientX;
+    };
+    const onDragEnd = () => stopAutoScroll();
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragend", onDragEnd);
+    return () => {
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragend", onDragEnd);
+    };
+  }, [draggingId, stopAutoScroll]);
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
@@ -1668,20 +1769,27 @@ function PipelinePage() {
     debounced.stage === "all" ? [...STAGES] : [debounced.stage as Stage];
 
   /* --- drag & drop --- */
-  const handleDragStart = useCallback((e: React.DragEvent, dealId: string) => {
-    setDraggingId(dealId);
-    e.dataTransfer.setData("text/plain", dealId);
-    e.dataTransfer.effectAllowed = "move";
-  }, []);
+  const handleDragStart = useCallback(
+    (e: React.DragEvent, dealId: string) => {
+      setDraggingId(dealId);
+      e.dataTransfer.setData("text/plain", dealId);
+      e.dataTransfer.effectAllowed = "move";
+      pointerXRef.current = e.clientX;
+      startAutoScroll();
+    },
+    [startAutoScroll],
+  );
 
   const handleDragEnd = useCallback(() => {
     setDraggingId(null);
     setDragOver(null);
-  }, []);
+    stopAutoScroll();
+  }, [stopAutoScroll]);
 
   const handleDrop = useCallback(
     async (e: React.DragEvent, stage: Stage) => {
       e.preventDefault();
+      stopAutoScroll();
       const dealId = e.dataTransfer.getData("text/plain") || draggingId;
       setDragOver(null);
       if (!dealId) return;
@@ -1777,7 +1885,7 @@ function PipelinePage() {
           />
 
           {/* Board */}
-          <div className="scroll-thin -mx-1 overflow-x-auto px-1 pb-2">
+          <div ref={boardRef} className="scroll-thin -mx-1 overflow-x-auto px-1 pb-2">
             <div className="flex h-[calc(100dvh-285px)] min-h-[420px] items-stretch gap-4">
               {visibleStages.map((stage) => (
                 <StageColumn
