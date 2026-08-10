@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createFileRoute, useLoaderData } from "@tanstack/react-router";
+import { Link, createFileRoute, useLoaderData } from "@tanstack/react-router";
 import type { SessionUser } from "~/lib/auth";
 import {
   STAGES,
@@ -13,9 +13,11 @@ import {
   type Deal,
   type DbStatus,
   type DealInput,
+  type LinkedContact,
   type PipelineUser,
   type Stage,
 } from "~/lib/pipeline";
+import { listContacts, type Contact } from "~/lib/contacts";
 
 export const Route = createFileRoute("/app/")({
   component: PipelinePage,
@@ -451,6 +453,7 @@ function DealFormModal({
   deal,
   users,
   me,
+  contacts,
   onClose,
   onSaved,
   notify,
@@ -458,6 +461,7 @@ function DealFormModal({
   deal: Deal | null;
   users: PipelineUser[];
   me: PipelineUser;
+  contacts: Contact[];
   onClose: () => void;
   onSaved: (dealId?: string) => void;
   notify: (msg: string) => void;
@@ -465,6 +469,7 @@ function DealFormModal({
   const editing = deal !== null;
   const [values, setValues] = useState({
     company: deal?.company ?? "",
+    contactId: deal?.contact_id ?? "",
     contactName: deal?.contact_name ?? "",
     contactEmail: deal?.contact_email ?? "",
     contactPhone: deal?.contact_phone ?? "",
@@ -478,6 +483,17 @@ function DealFormModal({
   const [saving, setSaving] = useState(false);
 
   const set = (patch: Partial<typeof values>) => setValues((v) => ({ ...v, ...patch }));
+
+  /** Picking a contact links the deal AND pre-fills the denormalized snapshot fields. */
+  function handleContactSelect(id: string) {
+    const c = contacts.find((x) => x.id === id);
+    set({
+      contactId: id,
+      ...(c
+        ? { contactName: c.name, contactEmail: c.email ?? "", contactPhone: c.phone ?? "" }
+        : {}),
+    });
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -496,6 +512,7 @@ function DealFormModal({
     setSaving(true);
     const payload: DealInput = {
       company,
+      contactId: values.contactId.trim() || null,
       contactName: values.contactName.trim() || null,
       contactEmail: values.contactEmail.trim() || null,
       contactPhone: values.contactPhone.trim() || null,
@@ -570,6 +587,27 @@ function DealFormModal({
               placeholder="Acme Corp"
               className="input-dark"
             />
+          </label>
+
+          <label className="flex flex-col gap-1.5 sm:col-span-2">
+            <span className={fieldLabel}>Contact</span>
+            <select
+              value={values.contactId}
+              onChange={(e) => handleContactSelect(e.target.value)}
+              className="input-dark bg-[#0c0c10] [&>option]:bg-[#0c0c10] [&>option]:text-fg"
+            >
+              <option value="">— None (fill in manually below) —</option>
+              {contacts.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                  {c.company ? ` — ${c.company}` : ""}
+                </option>
+              ))}
+            </select>
+            <span className="text-[11px] leading-relaxed text-white/30">
+              Picking a contact links the deal to them and pre-fills the fields below. You
+              can still edit the snapshot fields.
+            </span>
           </label>
 
           <label className="flex flex-col gap-1.5">
@@ -737,7 +775,12 @@ function DealDetailDrawer({
   const [state, setState] = useState<
     | { status: "loading" }
     | { status: "error"; reason: DbStatus }
-    | { status: "ready"; deal: Deal; activities: Activity[] }
+    | {
+        status: "ready";
+        deal: Deal;
+        activities: Activity[];
+        contact: LinkedContact | null;
+      }
   >({ status: "loading" });
   const [notes, setNotes] = useState("");
   const [savingNotes, setSavingNotes] = useState(false);
@@ -752,7 +795,12 @@ function DealDetailDrawer({
         return;
       }
       setNotes(res.deal.notes ?? "");
-      setState({ status: "ready", deal: res.deal, activities: res.activities });
+      setState({
+        status: "ready",
+        deal: res.deal,
+        activities: res.activities,
+        contact: res.contact,
+      });
     });
     return () => {
       cancelled = true;
@@ -839,32 +887,53 @@ function DealDetailDrawer({
                 </div>
               </div>
 
-              {/* Contact */}
+              {/* Contact — live contact row when linked, else the deal's snapshot */}
               <div className="glass mt-3 rounded-2xl p-4">
-                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
-                  Contact
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
+                    Contact
+                  </p>
+                  {state.contact ? (
+                    <Link
+                      to="/app/contacts"
+                      search={{ contact: state.contact.id }}
+                      className="btn-ghost h-7 px-2.5 text-[11px]"
+                    >
+                      <span className="text-white/40">{Icons.users}</span>
+                      View contact
+                    </Link>
+                  ) : null}
+                </div>
                 <div className="mt-2 space-y-2 text-[13px]">
-                  <p className="text-fg">{state.deal.contact_name || "No contact name"}</p>
-                  {state.deal.contact_email ? (
+                  <p className="text-fg">
+                    {state.contact?.name ??
+                      state.deal.contact_name ??
+                      "No contact name"}
+                  </p>
+                  {state.contact?.email ?? state.deal.contact_email ? (
                     <a
-                      href={`mailto:${state.deal.contact_email}`}
+                      href={`mailto:${state.contact?.email ?? state.deal.contact_email}`}
                       className="flex items-center gap-2 text-muted transition-colors hover:text-accent-light"
                     >
                       <span className="text-white/25">{Icons.mail}</span>
-                      <span className="truncate">{state.deal.contact_email}</span>
+                      <span className="truncate">
+                        {state.contact?.email ?? state.deal.contact_email}
+                      </span>
                     </a>
                   ) : null}
-                  {state.deal.contact_phone ? (
+                  {state.contact?.phone ?? state.deal.contact_phone ? (
                     <a
-                      href={`tel:${state.deal.contact_phone}`}
+                      href={`tel:${state.contact?.phone ?? state.deal.contact_phone}`}
                       className="flex items-center gap-2 text-muted transition-colors hover:text-accent-light"
                     >
                       <span className="text-white/25">{Icons.phone}</span>
-                      <span className="truncate">{state.deal.contact_phone}</span>
+                      <span className="truncate">
+                        {state.contact?.phone ?? state.deal.contact_phone}
+                      </span>
                     </a>
                   ) : null}
-                  {!state.deal.contact_email && !state.deal.contact_phone ? (
+                  {!(state.contact?.email ?? state.deal.contact_email) &&
+                  !(state.contact?.phone ?? state.deal.contact_phone) ? (
                     <p className="text-[12px] text-white/30">No contact details yet</p>
                   ) : null}
                 </div>
@@ -1055,6 +1124,7 @@ function PipelinePage() {
   );
   const [deals, setDeals] = useState<Deal[]>([]);
   const [users, setUsers] = useState<PipelineUser[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [filters, setFilters] = useState<FiltersState>({
     agentId: session.role === "owner" ? "all" : session.id,
     stage: "all",
@@ -1100,6 +1170,12 @@ function PipelinePage() {
     setUsers(usersRes.users);
     setDeals(dealsRes.deals);
     setStatus("ready");
+    // Contacts power the deal form's Contact dropdown — non-fatal if it fails.
+    listContacts()
+      .then((res) => {
+        if (res.ok) setContacts(res.contacts);
+      })
+      .catch(() => {});
   }, []);
 
   // Debounce filter changes (min/max typing), then refetch.
@@ -1269,6 +1345,7 @@ function PipelinePage() {
           deal={editingDeal}
           users={users}
           me={me}
+          contacts={contacts}
           onClose={() => {
             setFormOpen(false);
             setEditingDeal(null);

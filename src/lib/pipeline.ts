@@ -39,6 +39,7 @@ export interface PipelineUser {
 export interface Deal {
   id: string;
   company: string;
+  contact_id: string | null;
   contact_name: string | null;
   contact_email: string | null;
   contact_phone: string | null;
@@ -51,6 +52,14 @@ export interface Deal {
   last_activity_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** The contact linked to a deal (via deals.contact_id), if any. */
+export interface LinkedContact {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
 }
 
 export interface Activity {
@@ -78,6 +87,7 @@ export type DbStatus =
 
 export interface DealInput {
   company: string;
+  contactId?: string | null;
   contactName?: string | null;
   contactEmail?: string | null;
   contactPhone?: string | null;
@@ -100,6 +110,7 @@ function coerceDeal(r: Record<string, unknown>): Deal {
   return {
     id: String(r.id),
     company: String(r.company),
+    contact_id: r.contact_id == null ? null : String(r.contact_id),
     contact_name: r.contact_name == null ? null : String(r.contact_name),
     contact_email: r.contact_email == null ? null : String(r.contact_email),
     contact_phone: r.contact_phone == null ? null : String(r.contact_phone),
@@ -232,7 +243,7 @@ export const listDeals = createServerFn({ method: "POST" })
   });
 
 export type DealDetailResult =
-  | { ok: true; deal: Deal; activities: Activity[] }
+  | { ok: true; deal: Deal; activities: Activity[]; contact: LinkedContact | null }
   | { ok: false; reason: DbStatus };
 
 /** Full deal + read-only activity timeline (agents can only open their own deals). */
@@ -246,6 +257,26 @@ export const getDealDetail = createServerFn({ method: "POST" })
       const db = sql();
       const deal = await fetchOwnedDeal(db, user, data.dealId);
       if (!deal) return { ok: false, reason: "forbidden" };
+
+      // The linked contact record (if deals.contact_id is set) — the deal keeps
+      // denormalized contact_name/email/phone as a snapshot, but the drawer
+      // prefers the live contact row when one is linked.
+      let contact: LinkedContact | null = null;
+      if (deal.contact_id != null) {
+        const cRows = await db`
+          select id, name, email, phone from contacts where id = ${deal.contact_id} limit 1
+        `;
+        if (cRows.length > 0) {
+          const c = cRows[0];
+          contact = {
+            id: String(c.id),
+            name: String(c.name),
+            email: c.email == null ? null : String(c.email),
+            phone: c.phone == null ? null : String(c.phone),
+          };
+        }
+      }
+
       const actRows = await db`
         select a.id, a.deal_id, a.type, a.summary, u.name as author_name, a.created_at
         from activities a left join users u on u.id = a.author_id
@@ -255,6 +286,7 @@ export const getDealDetail = createServerFn({ method: "POST" })
       return {
         ok: true,
         deal: coerceDeal(deal),
+        contact,
         activities: actRows.map((a) => ({
           id: String(a.id),
           deal_id: String(a.deal_id),
@@ -288,9 +320,10 @@ export const createDeal = createServerFn({ method: "POST" })
       const db = sql();
       const ownerId = user.role === "owner" && data.ownerId ? data.ownerId : user.id;
       const rows = await db`
-        insert into deals (company, contact_name, contact_email, contact_phone, value, stage, owner_id, next_step, notes)
+        insert into deals (company, contact_id, contact_name, contact_email, contact_phone, value, stage, owner_id, next_step, notes)
         values (
           ${company},
+          ${data.contactId || null},
           ${data.contactName?.trim() || null},
           ${data.contactEmail?.trim() || null},
           ${data.contactPhone?.trim() || null},
@@ -340,6 +373,8 @@ export const updateDeal = createServerFn({ method: "POST" })
       if (data.contactName !== undefined) push("contact_name", data.contactName?.trim() || null);
       if (data.contactEmail !== undefined) push("contact_email", data.contactEmail?.trim() || null);
       if (data.contactPhone !== undefined) push("contact_phone", data.contactPhone?.trim() || null);
+      // undefined → leave the link untouched; null → clear it (denormalized fields remain)
+      if (data.contactId !== undefined) push("contact_id", data.contactId || null);
       if (data.value !== undefined) push("value", cleanValue(data.value));
       if (data.stage !== undefined) push("stage", data.stage);
       if (user.role === "owner" && data.ownerId !== undefined) push("owner_id", data.ownerId || null);

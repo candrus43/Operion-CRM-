@@ -129,6 +129,11 @@ export const SCHEMA_SQL = `
     created_at timestamptz NOT NULL DEFAULT now()
   );
 
+  -- One contact can have many deals. Idempotent so it also upgrades databases
+  -- created before this column existed. ON DELETE SET NULL keeps the deal row
+  -- (with its denormalized contact_name/email/phone) when a contact is deleted.
+  ALTER TABLE deals ADD COLUMN IF NOT EXISTS contact_id uuid REFERENCES contacts(id) ON DELETE SET NULL;
+
   CREATE TABLE IF NOT EXISTS resources (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
@@ -139,6 +144,7 @@ export const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_deals_owner_id ON deals (owner_id);
   CREATE INDEX IF NOT EXISTS idx_deals_stage ON deals (stage);
+  CREATE INDEX IF NOT EXISTS idx_deals_contact_id ON deals (contact_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
   CREATE INDEX IF NOT EXISTS idx_activities_deal_id ON activities (deal_id);
@@ -172,6 +178,45 @@ export async function seedIfNeeded(db: ReturnType<typeof sql>): Promise<void> {
     await writeFile(".run/seed-credentials.txt", `${message}\n`, "utf8");
   } catch {
     /* non-fatal — the server log above is the source of truth */
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Contacts backfill (idempotent, live-DB safe)                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Upgrades existing databases (where users already exist, so the first-run
+ * seed never runs): when the contacts table is still empty AND no deal has a
+ * contact_id yet, create a contact row for each demo deal's contact and link
+ * deals to contacts by matching contact_email. Safe to re-run — once any
+ * contact exists or any deal is linked, it does nothing.
+ */
+export async function backfillDemoContactsIfNeeded(
+  db: ReturnType<typeof sql>,
+): Promise<void> {
+  try {
+    const [{ c }] = await db`select count(*)::int as c from contacts`;
+    if (c > 0) return;
+    const [{ n }] = await db`select count(*)::int as n from deals where contact_id is not null`;
+    if (n > 0) return;
+
+    for (const d of DEMO_DEALS) {
+      await db`
+        insert into contacts (name, company, email, phone, notes)
+        values (${d.contact}, ${d.company}, ${d.email}, ${d.phone}, ${d.notes})
+      `;
+    }
+    await db`
+      update deals d
+      set contact_id = c.id
+      from contacts c
+      where c.email = d.contact_email and d.contact_email is not null
+    `;
+    console.log("[operion-crm] Backfilled demo contacts + linked demo deals by email.");
+  } catch (err) {
+    // Never block login/schema-ensure — log and move on.
+    console.error("[operion-crm] backfillDemoContactsIfNeeded failed:", err);
   }
 }
 
@@ -399,6 +444,7 @@ export async function loginCore(emailInput: string, passwordInput: string): Prom
   const db = sql();
   await ensureSchemaCore(db);
   await seedIfNeeded(db);
+  await backfillDemoContactsIfNeeded(db);
 
   const rows = await db`
     select id, name, email, password_hash, role
