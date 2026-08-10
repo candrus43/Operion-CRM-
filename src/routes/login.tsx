@@ -2,9 +2,8 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 import { getSession } from "~/lib/auth";
 import LoginPage from "~/components/login-page";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/login")({
   loader: async () => {
-    // Already signed in? Straight to the app.
     const session = await getSession();
     if (session) throw redirect({ to: "/app" });
     return null;
