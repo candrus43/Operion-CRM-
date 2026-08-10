@@ -1,16 +1,14 @@
-import { createFileRoute } from "@tanstack/react-router";
-import PlaceholderPage from "~/components/placeholder-page";
+import { Navigate, createFileRoute } from "@tanstack/react-router";
 
+/**
+ * Reports moved into the Commissions tab (MRR business overview + per-agent
+ * breakdown live on /app/commissions). Keep this route as a redirect so stale
+ * links and bookmarks don't 404.
+ */
 export const Route = createFileRoute("/app/reports")({
-  component: ReportsPage,
+  component: ReportsRedirect,
 });
 
-function ReportsPage() {
-  return (
-    <PlaceholderPage
-      eyebrow="Reports"
-      title="Reports"
-      description="Win rates, pipeline value, and activity — for the owner's eyes. Reporting lands after the pipeline ships."
-    />
-  );
+function ReportsRedirect() {
+  return <Navigate to="/app/commissions" replace />;
 }

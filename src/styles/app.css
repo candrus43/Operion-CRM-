@@ -517,6 +517,177 @@
 }
 
 /* ---------------------------------------------------------------------------
+   In-app document reader (markdown resources)
+--------------------------------------------------------------------------- */
+
+.doc-reader {
+  font-size: 0.95rem;
+  line-height: 1.75;
+  color: #c9c9d1;
+  overflow-wrap: break-word;
+}
+
+.doc-reader > :first-child {
+  margin-top: 0;
+}
+
+.doc-reader > :last-child {
+  margin-bottom: 0;
+}
+
+.doc-reader h1,
+.doc-reader h2,
+.doc-reader h3,
+.doc-reader h4 {
+  color: #fff;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.doc-reader h1 {
+  font-size: 1.75rem;
+  font-weight: 650;
+  margin: 0 0 1.1rem;
+}
+
+.doc-reader h2 {
+  font-size: 1.32rem;
+  font-weight: 600;
+  margin: 2.2rem 0 0.7rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.doc-reader h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 1.7rem 0 0.55rem;
+}
+
+.doc-reader h4 {
+  font-size: 0.98rem;
+  font-weight: 600;
+  margin: 1.4rem 0 0.45rem;
+}
+
+.doc-reader p {
+  margin: 0.9rem 0;
+}
+
+.doc-reader ul,
+.doc-reader ol {
+  margin: 0.9rem 0;
+  padding-left: 1.45rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.doc-reader ul {
+  list-style: disc;
+}
+
+.doc-reader ol {
+  list-style: decimal;
+}
+
+.doc-reader li::marker {
+  color: #a78bfa;
+}
+
+.doc-reader li > ul,
+.doc-reader li > ol {
+  margin: 0.35rem 0;
+}
+
+.doc-reader a {
+  color: #a78bfa;
+  text-decoration: underline;
+  text-decoration-color: rgba(167, 139, 250, 0.4);
+  text-underline-offset: 3px;
+}
+
+.doc-reader a:hover {
+  color: #c4b5fd;
+}
+
+.doc-reader strong {
+  color: #fff;
+  font-weight: 600;
+}
+
+.doc-reader em {
+  color: #dedee4;
+}
+
+.doc-reader code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.16);
+  padding: 0.14em 0.42em;
+  border-radius: 0.4rem;
+  color: #e9e2ff;
+}
+
+.doc-reader pre {
+  background: rgba(0, 0, 0, 0.38);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 0.9rem;
+  padding: 1rem 1.15rem;
+  overflow-x: auto;
+  margin: 1.1rem 0;
+}
+
+.doc-reader pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: #d8d4e8;
+  font-size: 0.85em;
+  line-height: 1.65;
+}
+
+.doc-reader blockquote {
+  border-left: 2px solid rgba(167, 139, 250, 0.5);
+  padding: 0.15rem 0 0.15rem 1rem;
+  margin: 1.1rem 0;
+  color: #a8a8b2;
+}
+
+.doc-reader hr {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(167, 139, 250, 0.4),
+    transparent
+  );
+  margin: 2rem 0;
+}
+
+.doc-reader table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.1rem 0;
+  font-size: 0.88rem;
+}
+
+.doc-reader th,
+.doc-reader td {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.5rem 0.8rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.doc-reader th {
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
    Pipeline (kanban) extras
 --------------------------------------------------------------------------- */
 

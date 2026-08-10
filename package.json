@@ -15,6 +15,7 @@
     "@neondatabase/serverless": "^1.1.0",
     "@tanstack/react-router": "^1.158.1",
     "@tanstack/react-start": "^1.158.3",
+    "marked": "^18.0.9",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

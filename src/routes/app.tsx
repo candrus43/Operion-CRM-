@@ -1,5 +1,11 @@
-import { useState } from "react";
-import { Link, Outlet, createFileRoute, redirect } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import {
+  Link,
+  Outlet,
+  createFileRoute,
+  redirect,
+  useRouterState,
+} from "@tanstack/react-router";
 import { getSession, logout, type SessionUser } from "~/lib/auth";
 
 export const Route = createFileRoute("/app")({
@@ -16,7 +22,6 @@ const NAV = [
   { to: "/app", label: "Pipeline", icon: "pipeline" },
   { to: "/app/contacts", label: "Contacts", icon: "contacts" },
   { to: "/app/resources", label: "Resources", icon: "resources" },
-  { to: "/app/reports", label: "Reports", icon: "reports" },
   { to: "/app/commissions", label: "Commissions", icon: "commissions" },
   // Owner-only admin — hidden for agents.
   { to: "/app/agents", label: "Agents", icon: "agents", ownerOnly: true },
@@ -57,13 +62,6 @@ function NavIcon({ icon }: { icon: string }) {
         <svg {...common} aria-hidden="true">
           <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-        </svg>
-      );
-    case "reports":
-      return (
-        <svg {...common} aria-hidden="true">
-          <path d="M3 3v18h18" />
-          <path d="M7 15l4-6 4 3 5-7" />
         </svg>
       );
     case "commissions":
@@ -145,11 +143,22 @@ function UserChip({ user }: { user: SessionUser }) {
   );
 }
 
-function SidebarContent({ user }: { user: SessionUser }) {
+function SidebarContent({
+  user,
+  onNavigate,
+}: {
+  user: SessionUser;
+  /** Called when a navigation link is pressed (the mobile drawer closes itself). */
+  onNavigate?: () => void;
+}) {
   return (
     <div className="flex h-full flex-col">
       {/* Brand */}
-      <Link to="/app" className="flex items-center gap-2.5 px-5 pt-6 pb-5">
+      <Link
+        to="/app"
+        onClick={onNavigate}
+        className="flex items-center gap-2.5 px-5 pt-6 pb-5"
+      >
         <img
           src="/logo.png"
           alt="Operion"
@@ -170,6 +179,7 @@ function SidebarContent({ user }: { user: SessionUser }) {
               <Link
                 key={item.to}
                 to={item.to}
+                onClick={onNavigate}
                 activeOptions={item.to === "/app" ? { exact: true } : undefined}
                 activeProps={{ className: "nav-link nav-link-active" }}
                 inactiveProps={{ className: "nav-link" }}
@@ -194,6 +204,14 @@ function SidebarContent({ user }: { user: SessionUser }) {
 function AppShell() {
   const session = Route.useLoaderData();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const location = useRouterState({ select: (s) => s.location });
+
+  // Belt-and-braces: whatever path closed the drawer, also close it whenever
+  // the route changes (covers programmatic navigation and any link that didn't
+  // go through onNavigate).
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [location.pathname, location.search]);
 
   return (
     <div className="min-h-dvh bg-ink text-fg">
@@ -268,7 +286,7 @@ function AppShell() {
                 </svg>
               </button>
             </div>
-            <SidebarContent user={session} />
+            <SidebarContent user={session} onNavigate={() => setDrawerOpen(false)} />
           </div>
         </div>
       ) : null}

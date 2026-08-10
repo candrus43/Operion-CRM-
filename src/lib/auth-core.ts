@@ -10,6 +10,7 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getCookie, getRequestProtocol, setCookie } from "@tanstack/react-start/server";
 import { sql } from "~/db";
+import { RESOURCE_SEEDS } from "./resource-seeds";
 
 export type Role = "owner" | "agent";
 
@@ -83,7 +84,7 @@ function cookieOptions(expires: Date | null): Record<string, unknown> {
  * Existing databases are upgraded exactly once: the first run that sees a
  * stale/missing marker runs the full ensure and then writes the new version.
  */
-export const SCHEMA_VERSION = "2";
+export const SCHEMA_VERSION = "3";
 
 export const SCHEMA_SQL = `
   -- Schema version marker row (key = 'schema_version'). schemaIsCurrent reads
@@ -171,13 +172,41 @@ export const SCHEMA_SQL = `
   ALTER TABLE deals ADD COLUMN IF NOT EXISTS closed_at timestamptz;
   UPDATE deals SET closed_at = updated_at WHERE closed_at IS NULL AND stage = 'Closed Won';
 
+  -- Resource library - real sales collateral (pricing sheet, playbooks, decks)
+  -- stored in the database so documents display INSIDE the CRM. file_data is
+  -- the raw file bytes (bytea) and text/markdown resources render in the in-app
+  -- reader, everything else downloads. uploaded_by is null for the seeded
+  -- team documents (shown as Operion team)
   CREATE TABLE IF NOT EXISTS resources (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name text NOT NULL,
-    category text,
-    url text,
+    title text NOT NULL,
+    category text NOT NULL,
+    description text NOT NULL DEFAULT '',
+    file_name text NOT NULL,
+    file_type text NOT NULL,
+    file_size bigint NOT NULL,
+    file_data bytea NOT NULL,
+    uploaded_by uuid REFERENCES users(id) ON DELETE SET NULL,
     created_at timestamptz NOT NULL DEFAULT now()
   );
+
+  -- v3 migration: the original placeholder resources table (name/category/url
+  -- columns only, never populated) is upgraded in place to the library shape
+  -- above. Every statement is idempotent, so re-runs and fresh databases are
+  -- safe - the final SET NOT NULL only succeeds once category has no nulls
+  ALTER TABLE resources ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT '';
+  ALTER TABLE resources ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT '';
+  ALTER TABLE resources ADD COLUMN IF NOT EXISTS file_name text NOT NULL DEFAULT '';
+  ALTER TABLE resources ADD COLUMN IF NOT EXISTS file_type text NOT NULL DEFAULT 'application/octet-stream';
+  ALTER TABLE resources ADD COLUMN IF NOT EXISTS file_size bigint NOT NULL DEFAULT 0;
+  ALTER TABLE resources ADD COLUMN IF NOT EXISTS file_data bytea NOT NULL DEFAULT ''::bytea;
+  ALTER TABLE resources ADD COLUMN IF NOT EXISTS uploaded_by uuid REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE resources DROP COLUMN IF EXISTS name;
+  ALTER TABLE resources DROP COLUMN IF EXISTS url;
+  UPDATE resources SET category = 'Pricing' WHERE category IS NULL;
+  ALTER TABLE resources ALTER COLUMN category SET NOT NULL;
+
+  CREATE INDEX IF NOT EXISTS idx_resources_created_at ON resources (created_at DESC);
 
   CREATE INDEX IF NOT EXISTS idx_deals_owner_id ON deals (owner_id);
   CREATE INDEX IF NOT EXISTS idx_deals_stage ON deals (stage);
@@ -294,11 +323,33 @@ export async function markSchemaCurrent(db: ReturnType<typeof sql>): Promise<voi
   `;
 }
 
+/**
+ * First-run seeding for the resource library: inserts the canonical team
+ * documents (pricing sheet, sales playbook, objection guide) as text/markdown
+ * resources with uploader NULL. Runs only when the resources table is empty,
+ * so it fires once on the v3 upgrade (or a brand-new database) and never
+ * again — deleting a resource later does not resurrect it, because the schema
+ * version marker is already current by then.
+ */
+export async function seedResourcesIfNeeded(db: ReturnType<typeof sql>): Promise<void> {
+  const [{ count }] = await db`select count(*)::int as count from resources`;
+  if (count > 0) return;
+  for (const seed of RESOURCE_SEEDS) {
+    const bytes = Buffer.from(seed.content, "utf8");
+    await db`
+      insert into resources (title, category, description, file_name, file_type, file_size, file_data, uploaded_by)
+      values (${seed.title}, ${seed.category}, ${seed.description}, ${seed.fileName}, ${seed.fileType}, ${bytes.length}, ${bytes}, null)
+    `;
+  }
+  console.log(`[operion-crm] seeded ${RESOURCE_SEEDS.length} resource documents`);
+}
+
 /** Full ensure: idempotent DDL + first-run owner seed + version marker. */
 export async function ensureSchemaFull(db: ReturnType<typeof sql>): Promise<void> {
   const t0 = Date.now();
   await ensureSchemaCore(db);
   await seedIfNeeded(db);
+  await seedResourcesIfNeeded(db);
   await markSchemaCurrent(db);
   console.log(`[operion-crm] schema ensured (v${SCHEMA_VERSION}) in ${Date.now() - t0}ms`);
 }
