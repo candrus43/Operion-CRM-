@@ -48,14 +48,23 @@ export function commissionFor(plan: Plan): number {
   return PLAN_PRICING[plan].setupFee * COMMISSION_RATE;
 }
 
-/** Annual value = MRR × 12. Always computed, never stored. */
+/** Annual value = MRR × 12 (the contract/ARR metric). Always computed, never stored. */
 export function annualValue(plan: Plan): number {
   return PLAN_PRICING[plan].mrr * 12;
 }
 
-/** Total first-year value = setup fee + annual value. Always computed, never stored. */
+/**
+ * Total first-year value = setup fee + 11 × MRR.
+ *
+ * Owner-ratified billing (plan revision 6): the client pays ONLY the setup fee
+ * at signup; the monthly subscription starts billing 31 days later (first
+ * monthly charge lands on day 31), so a new client contributes 11 monthly
+ * charges in year 1. Year-1 cash = setup + 11 months; annual value (MRR × 12)
+ * remains the contract metric and is intentionally a different number.
+ * Always computed, never stored.
+ */
 export function firstYearValue(plan: Plan): number {
-  return PLAN_PRICING[plan].setupFee + annualValue(plan);
+  return PLAN_PRICING[plan].setupFee + PLAN_PRICING[plan].mrr * 11;
 }
 
 /** True when `p` is a known plan name (validation helper). */

@@ -457,7 +457,15 @@
 }
 
 .rise-in {
-  animation: 1.15s cubic-bezier(0.16, 1, 0.3, 1) both rise-in;
+  /* `backwards` (not `both`): the 0% keyframe applies before/during the
+     animation, but once it finishes the element reverts to its base styles
+     (no transform). With `both`, the final `translateY(0)` stayed applied
+     forever, and ANY non-none transform makes the element the CSS containing
+     block for `position: fixed` descendants — so every modal/drawer rendered
+     inside a page's rise-in wrapper aligned to the page content instead of
+     the viewport on tall pages. Clearing the transform after the animation
+     restores viewport-relative fixed positioning everywhere. */
+  animation: 1.15s cubic-bezier(0.16, 1, 0.3, 1) backwards rise-in;
 }
 
 /* Sheen sweep overlay — put an absolutely positioned gradient child inside a

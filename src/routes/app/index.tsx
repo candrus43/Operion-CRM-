@@ -420,8 +420,8 @@ function FilterBar({
 }) {
   const selectCls = "select-dark select-dark-sm";
   return (
-    <div className="glass-deep mb-6 flex flex-wrap items-end gap-x-4 gap-y-3 rounded-2xl px-4 py-3.5">
-      <label className="flex min-w-36 flex-col gap-1.5">
+    <div className="glass-deep mb-6 grid grid-cols-2 items-end gap-x-3 gap-y-3 rounded-2xl px-4 py-3.5 sm:flex sm:flex-wrap sm:items-end sm:gap-x-4">
+      <label className="flex min-w-0 flex-col gap-1.5 sm:min-w-36">
         <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
           Agent
         </span>
@@ -442,7 +442,7 @@ function FilterBar({
         </div>
       </label>
 
-      <label className="flex min-w-40 flex-col gap-1.5">
+      <label className="flex min-w-0 flex-col gap-1.5 sm:min-w-40">
         <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
           Stage
         </span>
@@ -463,7 +463,7 @@ function FilterBar({
         </div>
       </label>
 
-      <label className="flex min-w-36 flex-col gap-1.5">
+      <label className="flex min-w-0 flex-col gap-1.5 sm:min-w-36">
         <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
           Plan
         </span>
@@ -526,7 +526,7 @@ function FilterBar({
         </div>
       </label>
 
-      <button type="button" onClick={onReset} className="btn-ghost mb-0.5">
+      <button type="button" onClick={onReset} className="btn-ghost col-span-2 mb-0.5">
         Reset filters
       </button>
     </div>

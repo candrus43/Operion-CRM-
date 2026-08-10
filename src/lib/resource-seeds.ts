@@ -40,19 +40,21 @@ Operion sells two subscription plans. Every deal in the pipeline is a sale of on
 
 | | **Founder** | **Studio** |
 | --- | --- | --- |
-| One-time setup fee | $2,500 | $5,000 |
+| One-time setup fee (due at signup) | $2,500 | $5,000 |
 | Monthly recurring (MRR) | $249 / month | $499 / month |
 | Annual value (MRR × 12) | $2,988 | $5,988 |
-| **Total first-year value** | **$5,488** | **$10,988** |
+| **Total first-year value** | **$5,239** | **$10,489** |
 
-- **Setup fee** — billed once, when the customer signs up.
-- **MRR** — monthly recurring revenue, billed every month the customer stays on the plan.
-- **Annual value** — the recurring portion over 12 months (MRR × 12).
-- **Total first-year value** — setup fee + annual value; the headline number for the first year of the contract.
+## How billing works (owner-ratified)
+- **At signup the customer pays ONLY the setup fee** — there is no monthly charge at signup.
+- **The monthly subscription starts billing 31 days later**: the first monthly charge lands on day 31 after signup.
+- **First-year total = setup fee + 11 monthly charges** — that is the cash a new customer pays in year 1: Founder $2,500 + 11 × $249 = **$5,239**; Studio $5,000 + 11 × $499 = **$10,489**.
+- **Annual value (MRR × 12)** is the contract/ARR metric — Founder $2,988, Studio $5,988 — and is intentionally different from the first-year cash total.
+- **After year 1** the customer pays only the monthly MRR.
 
 ## Agent commission
 
-Commission is **25% of the collected setup fee** on Closed Won deals — the only commission we pay. It is earned when the customer pays the setup fee, not when the deal closes.
+Commission is **25% of the collected setup fee** on Closed Won deals — the only commission we pay. It is earned when the customer pays the setup fee, not when the deal closes. The setup fee is still collected at signup, so the commission is unchanged by the billing schedule.
 
 | Plan | Setup fee | Commission (25%) |
 | --- | --- | --- |
@@ -66,8 +68,10 @@ Commission is **25% of the collected setup fee** on Closed Won deals — the onl
 
 | Question | Answer |
 | --- | --- |
-| What does the customer pay first? | The one-time setup fee. |
-| What do they pay after that? | MRR monthly (Founder $249, Studio $499). |
+| What does the customer pay at signup? | Only the one-time setup fee (Founder $2,500, Studio $5,000). |
+| When does the monthly subscription start? | 31 days after signup — the first monthly charge lands on day 31. |
+| What is the first-year total? | Setup + 11 months: Founder $5,239, Studio $10,489. |
+| What is the annual value? | MRR × 12: Founder $2,988, Studio $5,988. |
 | What does a Founder close earn? | $625 once the setup fee is collected. |
 | What does a Studio close earn? | $1,250 once the setup fee is collected. |
 `,
@@ -104,7 +108,7 @@ Deals move through seven stages. Each stage has a default probability used to co
 3. **Meeting** — discovery call or demo. Confirm the plan size and the decision-maker's email — you need a customer email before you can close.
 4. **Proposal** — share the pricing sheet (see the *Operion pricing sheet* resource) and the total first-year value for the plan.
 5. **Negotiation** — work through objections (see the *Objection handling guide*). Pricing is fixed — there are no discounts — but you can anchor on annual value vs. setup fee.
-6. **Closed Won** — use **Mark Won** in the CRM. This hands off to Operion: Operion emails the customer a Stripe payment link for the plan's setup fee + first month, and owns all payment. The deal moves to Closed Won **only when Operion accepts the handoff**.
+6. **Closed Won** — use **Mark Won** in the CRM. This hands off to Operion: Operion emails the customer a Stripe payment link for the plan's setup fee (the subscription starts billing automatically 31 days later), and owns all payment. The deal moves to Closed Won **only when Operion accepts the handoff**.
 7. **Closed Lost** — be honest. Log why it lost in the deal notes so the pipeline data stays truthful.
 
 ## Closing handoff (Mark Won)
@@ -113,7 +117,7 @@ Closing happens **inside the CRM, and the CRM never touches money**:
 
 1. The deal must be in **Negotiation** and have a customer email (either on the deal or on its linked contact). Without an email, Mark Won will refuse and tell you to add one.
 2. Click **Mark Won** — the CRM confirms with you, then POSTs to Operion's \`/api/crm/send-payment-link\` endpoint with the customer email, customer name and plan.
-3. Operion emails the customer from hello@operion.online with the correct Stripe payment link for the plan (setup fee + recurring subscription) and handles the payment.
+3. Operion emails the customer from hello@operion.online with the correct Stripe payment link for the plan (setup fee at signup; the subscription starts billing 31 days later) and handles the payment.
 4. The deal moves to **Closed Won** only when Operion returns success. If Operion is unreachable or returns an error, the deal **stays in Negotiation** and the CRM shows the error — just retry. A deal is never marked won until the payment link actually went out.
 
 After the customer pays the setup fee, mark **setup fee collected** on the deal — that earns your commission (25% of the setup fee: $625 Founder, $1,250 Studio).
@@ -151,9 +155,9 @@ The goal of objection handling is not to win an argument — it is to make sure 
 
 **Response:** Walk them through the full value, not just the sticker price.
 
-- Founder: $2,500 one-time setup, then $249/month — $2,988 for the first year of service, $5,488 total first-year outlay.
-- Studio: $5,000 setup, then $499/month — $5,988 first-year service, $10,988 total first-year outlay.
-- The setup fee is a one-time cost; the monthly fee is the ongoing subscription. After the first year the customer pays only the monthly MRR.
+- Founder: $2,500 one-time setup at signup, then $249/month from day 31 — $5,239 total first-year outlay (setup + 11 monthly charges), $2,988 annual contract value.
+- Studio: $5,000 setup at signup, then $499/month from day 31 — $10,489 total first-year outlay, $5,988 annual contract value.
+- The setup fee is a one-time cost paid at signup; the monthly subscription starts billing 31 days later. After the first year the customer pays only the monthly MRR.
 
 ## 2. "Why is there a setup fee?" (setup fee)
 
@@ -167,7 +171,7 @@ The goal of objection handling is not to win an argument — it is to make sure 
 
 **Response:** Be honest and useful:
 
-- Share the exact first-year cost so they can evaluate it against real numbers: $5,488 (Founder) or $10,988 (Studio) total first-year, of which the setup fee is $2,500/$5,000 and the subscription is $2,988/$5,988.
+- Share the exact first-year cost so they can evaluate it against real numbers: $5,239 (Founder) or $10,489 (Studio) total first-year outlay — the setup fee is $2,500/$5,000 paid at signup, then 11 monthly charges of $249/$499 (billing starts 31 days after signup). Annual contract value is $2,988/$5,988 (MRR × 12).
 - If it's a timing issue, agree on a concrete next step (a specific date to re-connect) and update the deal's next step in the CRM — don't leave it vague.
 - If the budget truly isn't there, that's a Closed Lost with an honest note, not a deal to push.
 
@@ -183,7 +187,7 @@ The goal of objection handling is not to win an argument — it is to make sure 
 
 **Response:** No manufactured urgency — ever. Instead:
 
-- Make the cost concrete so they can decide: Founder $5,488 / Studio $10,988 first-year total.
+- Make the cost concrete so they can decide: Founder $5,239 / Studio $10,489 first-year total.
 - Ask what would make the timing right, and put that in the deal notes as the next step.
 - If they need time, set the deal to a stage that reflects reality (or Closed Lost with a note) rather than letting it sit in Negotiation forever — stale deals hurt the forecast.
 

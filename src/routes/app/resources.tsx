@@ -739,8 +739,9 @@ function ResourcesPage() {
         </p>
       ) : null}
 
-      {/* Category filter chips */}
-      <div className="scroll-thin mb-6 flex gap-2 overflow-x-auto pb-1">
+      {/* Category filter chips — wrap into rows on small screens so every
+          category is visible; keep the horizontal scroll on desktop. */}
+      <div className="scroll-thin mb-6 flex flex-wrap gap-2 pb-1 sm:flex-nowrap sm:overflow-x-auto">
         {categories.map((c) => {
           const count = c === "All" ? (resources?.length ?? 0) : (resources?.filter((r) => r.category === c).length ?? 0);
           const active = filter === c;

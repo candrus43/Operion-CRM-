@@ -152,7 +152,7 @@ function SidebarContent({
   onNavigate?: () => void;
 }) {
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {/* Brand */}
       <Link
         to="/app"
@@ -169,7 +169,9 @@ function SidebarContent({
         </span>
       </Link>
 
-      <div className="px-3 pb-2">
+      {/* Nav area scrolls when the drawer is shorter than its content — the
+          user chip / Sign out stays pinned at the bottom and always reachable. */}
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-3 pb-2">
         <p className="px-3 pb-2 text-[10px] font-medium uppercase tracking-[0.16em] text-white/25">
           Workspace
         </p>
@@ -216,7 +218,7 @@ function AppShell() {
   return (
     <div className="min-h-dvh bg-ink text-fg">
       {/* Desktop sidebar */}
-      <aside className="glass-deep fixed inset-y-0 left-0 z-30 hidden w-64 md:block">
+      <aside className="glass-deep fixed inset-y-0 left-0 z-30 hidden w-64 md:flex md:flex-col">
         <SidebarContent user={session} />
       </aside>
 
@@ -262,7 +264,7 @@ function AppShell() {
             onClick={() => setDrawerOpen(false)}
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
           />
-          <div className="glass-deep absolute inset-y-0 left-0 w-72">
+          <div className="glass-deep absolute inset-y-0 left-0 flex w-72 flex-col">
             <div className="flex justify-end p-3">
               <button
                 type="button"
