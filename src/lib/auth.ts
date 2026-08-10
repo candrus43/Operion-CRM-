@@ -19,12 +19,10 @@ import { sql } from "~/db";
 
 export type { Role, SessionUser } from "./auth-core";
 import {
-  backfillDemoContactsIfNeeded,
-  ensureSchemaCore,
+  ensureSchemaFull,
   loginCore,
   logoutCore,
   readSession,
-  seedIfNeeded,
   type SessionUser,
 } from "./auth-core";
 
@@ -38,9 +36,7 @@ export const ensureSchema = createServerFn({ method: "GET" }).handler(async () =
     return { ok: false as const, reason: "db-not-connected" };
   }
   try {
-    await ensureSchemaCore(sql());
-    await seedIfNeeded(sql());
-    await backfillDemoContactsIfNeeded(sql());
+    await ensureSchemaFull(sql());
     return { ok: true as const };
   } catch (err) {
     console.error("[operion-crm] ensureSchema failed:", err);

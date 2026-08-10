@@ -77,7 +77,24 @@ function cookieOptions(expires: Date | null): Record<string, unknown> {
 /* Schema + seed                                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Bump SCHEMA_VERSION whenever SCHEMA_SQL changes. The login fast path
+ * (schemaIsCurrent) reads this marker from schema_meta and skips ALL DDL and
+ * seeding when it matches, so warm logins cost one read-only round trip.
+ * Existing databases are upgraded exactly once: the first run that sees a
+ * stale/missing marker runs the full ensure and then writes the new version.
+ */
+export const SCHEMA_VERSION = "1";
+
 export const SCHEMA_SQL = `
+  -- Schema version marker row (key = 'schema_version'). schemaIsCurrent reads
+  -- it on login and skips all DDL and seeding when it matches SCHEMA_VERSION
+  CREATE TABLE IF NOT EXISTS schema_meta (
+    key text PRIMARY KEY,
+    value text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+
   CREATE TABLE IF NOT EXISTS users (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
@@ -175,6 +192,20 @@ export async function seedIfNeeded(db: ReturnType<typeof sql>): Promise<void> {
   const [{ count }] = await db`select count(*)::int as count from users`;
   if (count > 0) return; // seed only when the tables are first created
 
+  try {
+    await seedAccountsAndDemoData(db);
+  } catch (err) {
+    // A concurrent warmer (startup kick racing the first login on a brand-new
+    // database) can seed between our count check and the insert. Re-check
+    // before surfacing so the loser treats it as already-seeded instead of
+    // failing a login that should succeed.
+    const [{ count: c2 }] = await db`select count(*)::int as count from users`;
+    if (c2 > 0) return;
+    throw err;
+  }
+}
+
+async function seedAccountsAndDemoData(db: ReturnType<typeof sql>): Promise<void> {
   const seeded = await db`
     insert into users (name, email, password_hash, role) values
       ('Owner',        ${SEED_OWNER_EMAIL}, ${hashPassword(SEED_OWNER_PASSWORD)}, 'owner'),
@@ -469,6 +500,66 @@ export async function ensureSchemaCore(db: ReturnType<typeof sql>): Promise<void
   }
 }
 
+/**
+ * Fast-path schema check — ONE read-only round trip. Returns true only when
+ * schema_meta exists AND its schema_version equals SCHEMA_VERSION AND the
+ * users table exists. Tolerant: if schema_meta is missing (fresh database) or
+ * the query fails for any reason, returns false so the caller runs the full
+ * ensure (login still works, just slower that once).
+ */
+export async function schemaIsCurrent(db: ReturnType<typeof sql>): Promise<boolean> {
+  try {
+    const rows = await db`
+      select
+        (select value from schema_meta where key = 'schema_version') as version,
+        to_regclass('public.users') as users_table
+    `;
+    const r = rows[0];
+    return !!r && r.version === SCHEMA_VERSION && r.users_table != null;
+  } catch {
+    return false; // schema_meta missing (fresh DB) or DB hiccup → full ensure
+  }
+}
+
+/** Persist the current SCHEMA_VERSION marker. Runs only after DDL + seed succeeded. */
+export async function markSchemaCurrent(db: ReturnType<typeof sql>): Promise<void> {
+  await db`
+    insert into schema_meta (key, value) values ('schema_version', ${SCHEMA_VERSION})
+    on conflict (key) do update set value = excluded.value, updated_at = now()
+  `;
+}
+
+/** Full ensure: idempotent DDL + first-run seed + contacts backfill + version marker. */
+export async function ensureSchemaFull(db: ReturnType<typeof sql>): Promise<void> {
+  const t0 = Date.now();
+  await ensureSchemaCore(db);
+  await seedIfNeeded(db);
+  await backfillDemoContactsIfNeeded(db);
+  await markSchemaCurrent(db);
+  console.log(`[operion-crm] schema ensured (v${SCHEMA_VERSION}) in ${Date.now() - t0}ms`);
+}
+
+/**
+ * Startup schema warm — fire-and-forget at boot (serve.ts / vite.config) so the
+ * first login only pays a single read-only version check. Never throws; on
+ * failure the login path re-runs the full ensure as a fallback.
+ */
+export async function warmSchemaNow(): Promise<void> {
+  if (!process.env.DATABASE_URL) return; // no DB connected yet — nothing to warm
+  const t0 = Date.now();
+  try {
+    const db = sql();
+    if (await schemaIsCurrent(db)) {
+      console.log(`[operion-crm] schema warm: up to date (${Date.now() - t0}ms)`);
+      return;
+    }
+    await ensureSchemaFull(db);
+    console.log(`[operion-crm] schema warm: ensured v${SCHEMA_VERSION} in ${Date.now() - t0}ms`);
+  } catch (err) {
+    console.error("[operion-crm] schema warm failed (login will re-ensure):", err);
+  }
+}
+
 export async function loginCore(emailInput: string, passwordInput: string): Promise<LoginCoreResult> {
   if (!process.env.DATABASE_URL) {
     return {
@@ -484,9 +575,11 @@ export async function loginCore(emailInput: string, passwordInput: string): Prom
   }
 
   const db = sql();
-  await ensureSchemaCore(db);
-  await seedIfNeeded(db);
-  await backfillDemoContactsIfNeeded(db);
+  if (!(await schemaIsCurrent(db))) {
+    const t0 = Date.now();
+    await ensureSchemaFull(db);
+    console.log(`[operion-crm] login: schema stale/missing — full ensure took ${Date.now() - t0}ms`);
+  }
 
   const rows = await db`
     select id, name, email, password_hash, role

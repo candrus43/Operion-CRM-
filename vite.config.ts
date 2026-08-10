@@ -1,8 +1,31 @@
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import tsConfigPaths from "vite-tsconfig-paths";
+
+// Warm the database schema at dev-server boot (fire-and-forget, never blocks
+// serving). Runs through Vite's SSR loader so `~/` aliases resolve; the login
+// fast path (schema version check) falls back to the full ensure if the warm
+// hasn't finished or failed.
+function crmSchemaWarm(): Plugin {
+  return {
+    name: "operion-crm-schema-warm",
+    configureServer(server) {
+      server.httpServer?.once("listening", () => {
+        setTimeout(() => {
+          server
+            .ssrLoadModule("/src/lib/auth-core.ts")
+            .then((m: Record<string, unknown>) => {
+              const warm = m.warmSchemaNow as (() => Promise<void>) | undefined;
+              if (warm) void warm();
+            })
+            .catch((err) => console.error("[operion-crm] dev schema warm failed:", err));
+        }, 0);
+      });
+    },
+  };
+}
 
 export default defineConfig({
   server: {
@@ -30,6 +53,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    crmSchemaWarm(),
     tailwindcss(),
     tsConfigPaths({
       projects: ["./tsconfig.json"],

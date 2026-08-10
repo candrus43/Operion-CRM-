@@ -58,3 +58,16 @@ for (let attempt = 1; ; attempt++) {
 }
 
 console.log(`team-site serving on http://${HOST}:${String(PORT)}`);
+
+// Warm the database schema in the background so a cold-started server never
+// makes the first login pay for schema DDL. Fire-and-forget: serving starts
+// immediately and never waits on this; the login fast path (schema version
+// check) falls back to the full ensure if the warm hasn't finished or failed.
+void (async () => {
+  try {
+    const { warmSchemaNow } = await import("./src/lib/auth-core.ts");
+    await warmSchemaNow();
+  } catch (err) {
+    console.error("[operion-crm] startup schema warm failed:", err);
+  }
+})();
