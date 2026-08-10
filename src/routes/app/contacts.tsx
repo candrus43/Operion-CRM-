@@ -13,6 +13,7 @@ import {
   type DbStatus,
   type Stage,
 } from "~/lib/contacts";
+import type { Plan } from "~/lib/pricing";
 
 export const Route = createFileRoute("/app/contacts")({
   // The pipeline's deal drawer deep-links here: /app/contacts?contact=<id>
@@ -36,6 +37,11 @@ const STAGE_BADGE: Record<Stage, string> = {
   Negotiation: "bg-amber-400/10 text-amber-300",
   "Closed Won": "bg-emerald-400/10 text-emerald-300",
   "Closed Lost": "bg-rose-400/10 text-rose-300",
+};
+
+const PLAN_BADGE: Record<Plan, string> = {
+  Founder: "bg-sky-400/10 text-sky-300 ring-1 ring-inset ring-sky-400/20",
+  Studio: "bg-violet-400/10 text-violet-300 ring-1 ring-inset ring-violet-400/20",
 };
 
 function formatUSD(v: number | null | undefined): string {
@@ -566,10 +572,21 @@ function ContactDetailDrawer({
                         <p className="truncate text-[14px] font-semibold tracking-[-0.045em] text-fg">
                           {d.company}
                         </p>
-                        <span className="shrink-0 text-[13px] font-medium tabular-nums text-white/85">
-                          {formatUSD(d.value)}
+                        <span className="flex shrink-0 items-center gap-2">
+                          <span className="text-[12px] font-medium tabular-nums text-white/85">
+                            {formatUSD(d.mrr)}
+                            <span className="text-[10px] font-medium text-white/45">/mo</span>
+                          </span>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ${PLAN_BADGE[d.plan]}`}
+                          >
+                            {d.plan}
+                          </span>
                         </span>
                       </div>
+                      <p className="mt-0.5 text-[11px] tabular-nums text-white/40">
+                        {formatUSD(d.firstYear)} total first year
+                      </p>
                       <div className="mt-2 flex items-center gap-2">
                         <span
                           className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ${STAGE_BADGE[d.stage]}`}

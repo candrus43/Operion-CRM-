@@ -18,6 +18,13 @@ import {
   type Stage,
 } from "~/lib/pipeline";
 import { listContacts, type Contact } from "~/lib/contacts";
+import {
+  PLANS,
+  PLAN_PRICING,
+  annualValue,
+  firstYearValue,
+  type Plan,
+} from "~/lib/pricing";
 
 export const Route = createFileRoute("/app/")({
   component: PipelinePage,
@@ -36,6 +43,26 @@ const STAGE_META: Record<Stage, { dot: string; badge: string }> = {
   "Closed Won": { dot: "bg-emerald-400", badge: "bg-emerald-400/10 text-emerald-300" },
   "Closed Lost": { dot: "bg-rose-400", badge: "bg-rose-400/10 text-rose-300" },
 };
+
+/** Plan badge styling — Founder sky, Studio violet. */
+const PLAN_META: Record<Plan, { badge: string }> = {
+  Founder: {
+    badge: "bg-sky-400/10 text-sky-300 ring-1 ring-inset ring-sky-400/20",
+  },
+  Studio: {
+    badge: "bg-violet-400/10 text-violet-300 ring-1 ring-inset ring-violet-400/20",
+  },
+};
+
+function PlanBadge({ plan, className = "" }: { plan: Plan; className?: string }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ${PLAN_META[plan].badge} ${className}`}
+    >
+      {plan}
+    </span>
+  );
+}
 
 function formatUSD(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
@@ -225,8 +252,15 @@ function DealCard({
         <p className="truncate text-[14px] font-semibold tracking-[-0.045em] text-fg">
           {deal.company}
         </p>
-        <span className="shrink-0 text-[13px] font-medium tabular-nums text-white/85">
-          {formatUSD(deal.value)}
+        <PlanBadge plan={deal.plan} className="shrink-0" />
+      </div>
+      <div className="mt-1 flex items-baseline gap-1.5">
+        <span className="text-[13px] font-semibold tabular-nums text-white/90">
+          {formatUSD(deal.mrr)}
+          <span className="text-[11px] font-medium text-white/50">/mo</span>
+        </span>
+        <span className="text-[11px] tabular-nums text-white/40">
+          · {formatUSD(deal.firstYear)} yr 1
         </span>
       </div>
       <p className="mt-0.5 truncate text-[12px] text-muted">
@@ -277,7 +311,7 @@ function StageColumn({
   onOpenDeal: (dealId: string) => void;
 }) {
   const meta = STAGE_META[stage];
-  const total = deals.reduce((sum, d) => sum + (d.value ?? 0), 0);
+  const totalMrr = deals.reduce((sum, d) => sum + d.mrr, 0);
   const isOver = dragOver === stage;
   return (
     <div
@@ -294,7 +328,8 @@ function StageColumn({
           {deals.length}
         </span>
         <span className="ml-auto truncate text-[11px] tabular-nums text-muted">
-          {formatUSD(total)}
+          {formatUSD(totalMrr)}
+          <span className="text-white/35">/mo</span>
         </span>
       </div>
 
@@ -348,7 +383,7 @@ function FilterBar({
   users,
   me,
 }: {
-  filters: { agentId: string; stage: string; min: string; max: string };
+  filters: { agentId: string; stage: string; plan: string; minMrr: string; maxMrr: string };
   onFilterChange: (patch: Partial<typeof filters>) => void;
   onReset: () => void;
   users: PipelineUser[];
@@ -400,9 +435,30 @@ function FilterBar({
         </div>
       </label>
 
+      <label className="flex min-w-36 flex-col gap-1.5">
+        <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
+          Plan
+        </span>
+        <div className="relative">
+          <select
+            value={filters.plan}
+            onChange={(e) => onFilterChange({ plan: e.target.value })}
+            className={selectCls}
+            aria-label="Filter by plan"
+          >
+            <option value="all">All plans</option>
+            {PLANS.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </div>
+      </label>
+
       <label className="flex flex-col gap-1.5">
         <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
-          Min value
+          Min MRR
         </span>
         <div className="relative">
           <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-[12px] text-white/30">
@@ -412,18 +468,18 @@ function FilterBar({
             type="number"
             min={0}
             inputMode="numeric"
-            placeholder="1,000"
-            value={filters.min}
-            onChange={(e) => onFilterChange({ min: e.target.value })}
-            className="input-dark h-9 w-32 py-0 pl-7 pr-3 text-[13px]"
-            aria-label="Minimum deal value"
+            placeholder="249"
+            value={filters.minMrr}
+            onChange={(e) => onFilterChange({ minMrr: e.target.value })}
+            className="input-dark h-9 w-28 py-0 pl-7 pr-3 text-[13px]"
+            aria-label="Minimum monthly recurring revenue"
           />
         </div>
       </label>
 
       <label className="flex flex-col gap-1.5">
         <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
-          Max value
+          Max MRR
         </span>
         <div className="relative">
           <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-[12px] text-white/30">
@@ -433,11 +489,11 @@ function FilterBar({
             type="number"
             min={0}
             inputMode="numeric"
-            placeholder="250,000"
-            value={filters.max}
-            onChange={(e) => onFilterChange({ max: e.target.value })}
-            className="input-dark h-9 w-32 py-0 pl-7 pr-3 text-[13px]"
-            aria-label="Maximum deal value"
+            placeholder="499"
+            value={filters.maxMrr}
+            onChange={(e) => onFilterChange({ maxMrr: e.target.value })}
+            className="input-dark h-9 w-28 py-0 pl-7 pr-3 text-[13px]"
+            aria-label="Maximum monthly recurring revenue"
           />
         </div>
       </label>
@@ -473,7 +529,7 @@ function DealFormModal({
     contactName: deal?.contact_name ?? "",
     contactEmail: deal?.contact_email ?? "",
     contactPhone: deal?.contact_phone ?? "",
-    value: deal?.value != null ? String(deal.value) : "",
+    plan: (deal?.plan ?? "Founder") as Plan,
     stage: (deal?.stage ?? "Lead") as Stage,
     ownerId: deal?.owner_id ?? me.id,
     nextStep: deal?.next_step ?? "",
@@ -503,20 +559,15 @@ function DealFormModal({
       setError("Company name is required.");
       return;
     }
-    const value = values.value.trim() === "" ? null : Number(values.value);
-    if (values.value.trim() !== "" && !Number.isFinite(value)) {
-      setError("Enter a valid deal value.");
-      return;
-    }
     setError(null);
     setSaving(true);
     const payload: DealInput = {
       company,
+      plan: values.plan,
       contactId: values.contactId.trim() || null,
       contactName: values.contactName.trim() || null,
       contactEmail: values.contactEmail.trim() || null,
       contactPhone: values.contactPhone.trim() || null,
-      value,
       stage: values.stage,
       nextStep: values.nextStep.trim() || null,
       notes: values.notes.trim() || null,
@@ -642,16 +693,18 @@ function DealFormModal({
           </label>
 
           <label className="flex flex-col gap-1.5">
-            <span className={fieldLabel}>Value (USD)</span>
-            <input
-              type="number"
-              min={0}
-              inputMode="numeric"
-              value={values.value}
-              onChange={(e) => set({ value: e.target.value })}
-              placeholder="25,000"
-              className="input-dark"
-            />
+            <span className={fieldLabel}>Plan *</span>
+            <select
+              value={values.plan}
+              onChange={(e) => set({ plan: e.target.value as Plan })}
+              className="input-dark bg-[#0c0c10] [&>option]:bg-[#0c0c10] [&>option]:text-fg"
+            >
+              {PLANS.map((p) => (
+                <option key={p} value={p}>
+                  {p} — ${PLAN_PRICING[p].mrr}/mo
+                </option>
+              ))}
+            </select>
           </label>
 
           <label className="flex flex-col gap-1.5">
@@ -668,6 +721,46 @@ function DealFormModal({
               ))}
             </select>
           </label>
+
+          {/* Operion subscription pricing — computed from the plan, never typed */}
+          <div className="glass rounded-2xl p-4 sm:col-span-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
+                Operion subscription — {values.plan}
+              </p>
+              <PlanBadge plan={values.plan} />
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div>
+                <p className="text-[10px] text-white/30">Setup fee</p>
+                <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
+                  {formatUSD(PLAN_PRICING[values.plan].setupFee)}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] text-white/30">MRR</p>
+                <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
+                  {formatUSD(PLAN_PRICING[values.plan].mrr)}
+                  <span className="text-[11px] font-medium text-white/50">/mo</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] text-white/30">Annual value</p>
+                <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
+                  {formatUSD(annualValue(values.plan))}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] text-white/30">First-year total</p>
+                <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-gradient-violet">
+                  {formatUSD(firstYearValue(values.plan))}
+                </p>
+              </div>
+            </div>
+            <p className="mt-2.5 text-[11px] leading-relaxed text-white/30">
+              Values are computed from the {values.plan} plan — no manual pricing entry.
+            </p>
+          </div>
 
           {me.role === "owner" ? (
             <label className="flex flex-col gap-1.5 sm:col-span-2">
@@ -867,15 +960,16 @@ function DealDetailDrawer({
                 </button>
               </div>
 
-              {/* Value + owner */}
+              {/* Plan + owner */}
               <div className="mt-6 grid grid-cols-2 gap-3">
                 <div className="glass rounded-2xl p-4">
                   <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
-                    Value
+                    Plan
                   </p>
-                  <p className="mt-1.5 text-xl font-semibold tracking-[-0.03em] tabular-nums text-fg">
-                    {formatUSD(state.deal.value)}
-                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <PlanBadge plan={state.deal.plan} />
+                    <span className="text-sm font-medium text-fg">{state.deal.plan}</span>
+                  </div>
                 </div>
                 <div className="glass rounded-2xl p-4">
                   <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
@@ -884,6 +978,45 @@ function DealDetailDrawer({
                   <p className="mt-1.5 truncate text-sm font-medium text-fg">
                     {state.deal.owner_name || (me.role === "owner" ? "Unassigned" : "You")}
                   </p>
+                </div>
+              </div>
+
+              {/* Operion subscription pricing — computed from the plan */}
+              <div className="glass mt-3 rounded-2xl p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
+                    Operion subscription
+                  </p>
+                  <span className="text-[11px] tabular-nums text-white/40">
+                    {formatUSD(state.deal.mrr)}/mo · {formatUSD(state.deal.firstYear)} yr 1
+                  </span>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <div>
+                    <p className="text-[10px] text-white/30">Setup fee</p>
+                    <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
+                      {formatUSD(state.deal.setupFee)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-white/30">MRR</p>
+                    <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
+                      {formatUSD(state.deal.mrr)}
+                      <span className="text-[11px] font-medium text-white/50">/mo</span>
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-white/30">Annual value</p>
+                    <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
+                      {formatUSD(state.deal.annual)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-white/30">First-year total</p>
+                    <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-gradient-violet">
+                      {formatUSD(state.deal.firstYear)}
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -1108,8 +1241,9 @@ function Toast({ message }: { message: string }) {
 interface FiltersState {
   agentId: string;
   stage: string;
-  min: string;
-  max: string;
+  plan: string;
+  minMrr: string;
+  maxMrr: string;
 }
 
 function PipelinePage() {
@@ -1128,8 +1262,9 @@ function PipelinePage() {
   const [filters, setFilters] = useState<FiltersState>({
     agentId: session.role === "owner" ? "all" : session.id,
     stage: "all",
-    min: "",
-    max: "",
+    plan: "all",
+    minMrr: "",
+    maxMrr: "",
   });
   const [debounced, setDebounced] = useState(filters);
   const [toast, setToast] = useState<string | null>(null);
@@ -1150,8 +1285,9 @@ function PipelinePage() {
     const toFilters = {
       agentId: f.agentId === "all" ? null : f.agentId,
       stage: f.stage === "all" ? null : (f.stage as Stage),
-      minValue: f.min === "" ? null : Number(f.min),
-      maxValue: f.max === "" ? null : Number(f.max),
+      plan: f.plan === "all" ? null : (f.plan as Plan),
+      minMrr: f.minMrr === "" ? null : Number(f.minMrr),
+      maxMrr: f.maxMrr === "" ? null : Number(f.maxMrr),
     };
     const [usersRes, dealsRes] = await Promise.all([
       listUsers(),
@@ -1264,8 +1400,9 @@ function PipelinePage() {
   const filterCount =
     (filters.agentId !== "all" && filters.agentId !== session.id ? 1 : 0) +
     (filters.stage !== "all" ? 1 : 0) +
-    (filters.min !== "" ? 1 : 0) +
-    (filters.max !== "" ? 1 : 0);
+    (filters.plan !== "all" ? 1 : 0) +
+    (filters.minMrr !== "" ? 1 : 0) +
+    (filters.maxMrr !== "" ? 1 : 0);
 
   return (
     <div className="rise-in">
@@ -1304,8 +1441,9 @@ function PipelinePage() {
               setFilters({
                 agentId: session.role === "owner" ? "all" : session.id,
                 stage: "all",
-                min: "",
-                max: "",
+                plan: "all",
+                minMrr: "",
+                maxMrr: "",
               })
             }
             users={users}

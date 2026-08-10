@@ -16,6 +16,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { sql } from "~/db";
 import { readSession } from "./auth-core";
 import type { DbStatus, Stage } from "./pipeline";
+import { PLAN_PRICING, annualValue, firstYearValue, isPlan, type Plan } from "./pricing";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -39,7 +40,11 @@ export interface ContactDeal {
   id: string;
   company: string;
   stage: Stage;
-  value: number | null;
+  plan: Plan;
+  setupFee: number;
+  mrr: number;
+  annual: number;
+  firstYear: number;
   owner_id: string | null;
   owner_name: string | null;
   updated_at: string;
@@ -86,11 +91,16 @@ function coerceContactWithCount(r: Record<string, unknown>): ContactWithCount {
 }
 
 function coerceContactDeal(r: Record<string, unknown>): ContactDeal {
+  const plan = isPlan(r.plan) ? r.plan : "Founder";
   return {
     id: String(r.id),
     company: String(r.company),
     stage: String(r.stage) as Stage,
-    value: r.value == null ? null : Number(r.value),
+    plan,
+    setupFee: PLAN_PRICING[plan].setupFee,
+    mrr: PLAN_PRICING[plan].mrr,
+    annual: annualValue(plan),
+    firstYear: firstYearValue(plan),
     owner_id: r.owner_id == null ? null : String(r.owner_id),
     owner_name: r.owner_name == null ? null : String(r.owner_name),
     updated_at: new Date(r.updated_at as Date).toISOString(),
@@ -153,7 +163,7 @@ export const getContactDetail = createServerFn({ method: "POST" })
           : "where d.contact_id = $1 and d.owner_id = $2";
       const args = user.role === "owner" ? [data.contactId] : [data.contactId, user.id];
       const dealRows = await db.query(
-        `select d.id, d.company, d.stage, d.value, d.owner_id, u.name as owner_name, d.updated_at
+        `select d.id, d.company, d.stage, d.plan, d.owner_id, u.name as owner_name, d.updated_at
          from deals d left join users u on u.id = d.owner_id
          ${where}
          order by d.updated_at desc`,

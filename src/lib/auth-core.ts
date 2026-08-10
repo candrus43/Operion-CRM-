@@ -10,6 +10,7 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getCookie, getRequestProtocol, setCookie } from "@tanstack/react-start/server";
 import { sql } from "~/db";
+import type { Plan } from "./pricing";
 
 export type Role = "owner" | "agent";
 
@@ -134,6 +135,12 @@ export const SCHEMA_SQL = `
   -- (with its denormalized contact_name/email/phone) when a contact is deleted.
   ALTER TABLE deals ADD COLUMN IF NOT EXISTS contact_id uuid REFERENCES contacts(id) ON DELETE SET NULL;
 
+  -- Plan-based subscription pricing - the plan is the only pricing input a user sets.
+  -- Derived numbers (setup fee, MRR, annual, first-year) are computed in code from
+  -- src/lib/pricing.ts. The legacy value column stays in place (unused) for migration
+  -- safety - do NOT drop it.
+  ALTER TABLE deals ADD COLUMN IF NOT EXISTS plan text NOT NULL DEFAULT 'Founder' CHECK (plan IN ('Founder','Studio'));
+
   CREATE TABLE IF NOT EXISTS resources (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
@@ -230,105 +237,114 @@ interface DemoDeal {
   contact: string;
   email: string;
   phone: string;
-  value: number;
+  plan: Plan;
   stage: string;
   owner: "owner" | "agent";
   nextStep: string;
   notes: string;
   createdDaysAgo: number;
+  /** When a closed deal actually closed (won/lost) — drives its activity timestamps. */
+  closedDaysAgo?: number;
 }
 
+/**
+ * Owner-specified demo prospects. Every deal is an Operion subscription sale:
+ * `plan` is the only pricing field, and all values are computed from it in
+ * src/lib/pricing.ts (never stored, never typed).
+ */
 const DEMO_DEALS: DemoDeal[] = [
   {
-    key: "acme",
-    company: "Acme Corp",
-    contact: "Dana Whitfield",
-    email: "dana@acmecorp.com",
-    phone: "+1 (415) 555-0142",
-    value: 12000,
-    stage: "Lead",
+    key: "hudson",
+    company: "Hudson Properties",
+    contact: "Daniel Hudson",
+    email: "daniel@hudsonprops.com",
+    phone: "+1 (312) 555-0147",
+    plan: "Studio",
+    stage: "Negotiation",
     owner: "owner",
-    nextStep: "Send intro deck and discovery questions",
-    notes: "Inbound via the website — interested in the team plan.",
-    createdDaysAgo: 8,
+    nextStep: "Circulate revised MSA — annual Studio terms at $499/mo",
+    notes: "Owner of 4 commercial properties; wants one CRM for tenant and lease relationships. Negotiating on onboarding scope.",
+    createdDaysAgo: 18,
   },
   {
-    key: "globex",
-    company: "Globex Industries",
-    contact: "Marcus Reed",
-    email: "marcus@globex.io",
-    phone: "+1 (212) 555-0188",
-    value: 45000,
-    stage: "Contacted",
+    key: "bridgewater",
+    company: "Bridgewater Holdings",
+    contact: "Vivian Liu",
+    email: "vivian@bridgewaterholdings.com",
+    phone: "+1 (212) 555-0163",
+    plan: "Studio",
+    stage: "Proposal",
     owner: "agent",
-    nextStep: "Book kickoff call for next week",
-    notes: "Referred by a mutual contact. Warm lead.",
+    nextStep: "Follow up on proposal sent Tuesday",
+    notes: "Family office managing 3 LLCs — consolidating entity contacts and deal flow. Proposal v1 includes onboarding and priority support.",
     createdDaysAgo: 12,
   },
   {
-    key: "initech",
-    company: "Initech",
-    contact: "Peter Gibbons",
-    email: "peter@initech.com",
-    phone: "+1 (512) 555-0139",
-    value: 8500,
+    key: "sarah-chen",
+    company: "Sarah Chen",
+    contact: "Sarah Chen",
+    email: "sarah@chenstudios.co",
+    phone: "+1 (415) 555-0129",
+    plan: "Founder",
     stage: "Meeting",
-    owner: "owner",
-    nextStep: "Prep product demo for the finance team",
-    notes: "Demo scheduled for Thursday — bring the reporting module.",
-    createdDaysAgo: 10,
-  },
-  {
-    key: "umbrella",
-    company: "Umbrella Health",
-    contact: "Claire Redfield",
-    email: "claire@umbrella.health",
-    phone: "+1 (646) 555-0166",
-    value: 120000,
-    stage: "Proposal",
     owner: "agent",
-    nextStep: "Follow up on the proposal sent Tuesday",
-    notes: "Proposal v2 includes onboarding and priority support.",
-    createdDaysAgo: 16,
+    nextStep: "Run product demo for both e-commerce brands",
+    notes: "Solo entrepreneur running 2 e-commerce brands; wants pipeline and contacts in one place. Founder fits her volume.",
+    createdDaysAgo: 8,
   },
   {
-    key: "stark",
-    company: "Stark Industries",
-    contact: "Pepper Potts",
-    email: "pepper@stark.com",
-    phone: "+1 (310) 555-0117",
-    value: 250000,
-    stage: "Negotiation",
+    key: "meridian",
+    company: "Meridian Group",
+    contact: "Robert Okafor",
+    email: "robert@meridiangroup.io",
+    phone: "+1 (646) 555-0174",
+    plan: "Studio",
+    stage: "Contacted",
     owner: "owner",
-    nextStep: "Circulate revised MSA — price holds at 250k",
-    notes: "Legal is reviewing terms; they want a 6-month rollout.",
-    createdDaysAgo: 20,
+    nextStep: "Book intro call for next week",
+    notes: "PE-backed operator with 5 portfolio companies. Interested in per-entity pipelines under one account.",
+    createdDaysAgo: 6,
   },
   {
-    key: "wayne",
-    company: "Wayne Enterprises",
-    contact: "Lucius Fox",
-    email: "lucius@wayne.com",
-    phone: "+1 (312) 555-0149",
-    value: 96000,
+    key: "ortega",
+    company: "James Ortega",
+    contact: "James Ortega",
+    email: "james@ortegaconsulting.com",
+    phone: "+1 (305) 555-0136",
+    plan: "Founder",
+    stage: "Lead",
+    owner: "owner",
+    nextStep: "Send intro deck and discovery questions",
+    notes: "Independent consultant managing multiple client entities. Referred by a mutual contact.",
+    createdDaysAgo: 3,
+  },
+  {
+    key: "bluebird",
+    company: "Bluebird Bookkeeping",
+    contact: "Priya Raman",
+    email: "priya@bluebirdbookkeeping.com",
+    phone: "+1 (206) 555-0158",
+    plan: "Founder",
     stage: "Closed Won",
     owner: "agent",
     nextStep: "Send welcome kit and schedule onboarding",
-    notes: "Signed a 12-month agreement. Renewal window in January.",
-    createdDaysAgo: 25,
+    notes: "Signed Founder (12-month agreement). Setup fee invoiced, first month billed. Closed this month.",
+    createdDaysAgo: 20,
+    closedDaysAgo: 7,
   },
   {
-    key: "hooli",
-    company: "Hooli",
-    contact: "Gavin Belson",
-    email: "gavin@hooli.com",
-    phone: "+1 (650) 555-0124",
-    value: 18000,
+    key: "summit",
+    company: "Summit Capital Partners",
+    contact: "Theodore Vance",
+    email: "tvance@summitcapital.partners",
+    phone: "+1 (617) 555-0119",
+    plan: "Studio",
     stage: "Closed Lost",
     owner: "owner",
     nextStep: "",
-    notes: "Went with a competitor. Worth revisiting next quarter.",
-    createdDaysAgo: 22,
+    notes: "Went with a competitor on price. Worth revisiting next quarter with a different packaging angle.",
+    createdDaysAgo: 26,
+    closedDaysAgo: 20,
   },
 ];
 
@@ -337,7 +353,7 @@ function daysAgo(days: number, hours = 0): string {
   return new Date(Date.now() - days * 86_400_000 - hours * 3_600_000).toISOString();
 }
 
-/** First-run demo data: ~7 deals across every stage + activities on most of them. */
+/** First-run demo data: 7 Operion prospects across every stage + activities on most of them. */
 async function seedDemoDeals(
   db: ReturnType<typeof sql>,
   ownerId: string,
@@ -348,10 +364,10 @@ async function seedDemoDeals(
     const owner = d.owner === "owner" ? ownerId : agentId;
     const [row] = await db`
       insert into deals (
-        company, contact_name, contact_email, contact_phone, value, stage,
+        company, contact_name, contact_email, contact_phone, plan, stage,
         owner_id, next_step, notes, created_at, updated_at
       ) values (
-        ${d.company}, ${d.contact}, ${d.email}, ${d.phone}, ${d.value}, ${d.stage},
+        ${d.company}, ${d.contact}, ${d.email}, ${d.phone}, ${d.plan}, ${d.stage},
         ${owner}, ${d.nextStep || null}, ${d.notes}, ${daysAgo(d.createdDaysAgo)},
         ${daysAgo(d.createdDaysAgo)}
       )
@@ -362,18 +378,17 @@ async function seedDemoDeals(
 
   await db`
     insert into activities (deal_id, type, summary, author_id, created_at) values
-      (${ids.acme},  'note',    'Deal created from website inquiry',      ${ownerId}, ${daysAgo(8)}),
-      (${ids.globex}, 'email',  'Sent intro email and company overview',  ${agentId}, ${daysAgo(4, 5)}),
-      (${ids.globex}, 'call',   'Discovery call — 25 min, went well',     ${agentId}, ${daysAgo(2, 3)}),
-      (${ids.initech}, 'meeting', 'Demo with the finance team',           ${ownerId}, ${daysAgo(0, 5)}),
-      (${ids.umbrella}, 'stage', 'Moved to Proposal',                     ${agentId}, ${daysAgo(3, 6)}),
-      (${ids.umbrella}, 'email', 'Sent proposal v2 with onboarding',      ${agentId}, ${daysAgo(3, 2)}),
-      (${ids.stark},  'stage',  'Moved to Negotiation',                   ${ownerId}, ${daysAgo(8)}),
-      (${ids.stark},  'meeting','Negotiation call — price agreed at 250k',${ownerId}, ${daysAgo(1, 4)}),
-      (${ids.wayne},  'email',  'Sent 12-month agreement',                ${agentId}, ${daysAgo(12)}),
-      (${ids.wayne},  'stage',  'Closed Won — contract signed',           ${agentId}, ${daysAgo(9, 3)}),
-      (${ids.hooli},  'note',   'Lost to competitor this cycle',          ${ownerId}, ${daysAgo(15)}),
-      (${ids.hooli},  'stage',  'Closed Lost',                            ${ownerId}, ${daysAgo(15, 1)})
+      (${ids.hudson},    'stage',   'Moved to Negotiation',                    ${ownerId}, ${daysAgo(8)}),
+      (${ids.hudson},    'meeting', 'Negotiation call — annual Studio terms at $499/mo', ${ownerId}, ${daysAgo(1, 4)}),
+      (${ids.bridgewater}, 'email', 'Sent proposal with onboarding + priority support', ${agentId}, ${daysAgo(3, 6)}),
+      (${ids.bridgewater}, 'call',  'Discovery call — 30 min, went well',      ${agentId}, ${daysAgo(2, 3)}),
+      (${ids["sarah-chen"]}, 'meeting', 'Demo scheduled for this week',         ${agentId}, ${daysAgo(1, 2)}),
+      (${ids.meridian},  'email',  'Sent intro email and company overview',    ${ownerId}, ${daysAgo(2, 5)}),
+      (${ids.ortega},    'note',   'Deal created from referral',               ${ownerId}, ${daysAgo(1)}),
+      (${ids.bluebird},  'email',  'Sent 12-month Founder agreement',          ${agentId}, ${daysAgo(12)}),
+      (${ids.bluebird},  'stage',  'Closed Won — contract signed',             ${agentId}, ${daysAgo(7)}),
+      (${ids.summit},    'note',   'Lost to competitor on price',              ${ownerId}, ${daysAgo(20)}),
+      (${ids.summit},    'stage',  'Closed Lost',                              ${ownerId}, ${daysAgo(20, 1)})
   `;
 
   // Keep last_activity_at in sync with each deal's most recent activity.

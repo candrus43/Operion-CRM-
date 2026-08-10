@@ -13,6 +13,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { sql } from "~/db";
 import { dealQueryScope, type DealQueryScope } from "./auth";
 import { readSession, type SessionUser } from "./auth-core";
+import { PLAN_PRICING, annualValue, firstYearValue, isPlan, type Plan } from "./pricing";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -43,7 +44,16 @@ export interface Deal {
   contact_name: string | null;
   contact_email: string | null;
   contact_phone: string | null;
-  value: number | null;
+  /** Operion subscription plan — the only pricing input. */
+  plan: Plan;
+  /** Computed from the plan — never stored. */
+  setupFee: number;
+  /** Computed from the plan — never stored. */
+  mrr: number;
+  /** Computed from the plan (MRR × 12) — never stored. */
+  annual: number;
+  /** Computed from the plan (setup + annual) — never stored. */
+  firstYear: number;
   stage: Stage;
   owner_id: string | null;
   owner_name: string | null;
@@ -74,8 +84,11 @@ export interface Activity {
 export interface DealFilters {
   agentId: string | null;
   stage: Stage | null;
-  minValue: number | null;
-  maxValue: number | null;
+  /** Filter by plan (null = all plans). */
+  plan: Plan | null;
+  /** Optional MRR range — matched against the deal plan's MRR. */
+  minMrr: number | null;
+  maxMrr: number | null;
 }
 
 export type DbStatus =
@@ -87,11 +100,12 @@ export type DbStatus =
 
 export interface DealInput {
   company: string;
+  /** Operion subscription plan — the only pricing input. Defaults to Founder. */
+  plan?: Plan;
   contactId?: string | null;
   contactName?: string | null;
   contactEmail?: string | null;
   contactPhone?: string | null;
-  value?: number | null;
   stage: Stage;
   ownerId?: string | null;
   nextStep?: string | null;
@@ -107,6 +121,8 @@ export type WriteResult = { ok: true; dealId?: string } | { ok: false; reason: D
 const STAGE_SET = new Set<string>(STAGES);
 
 function coerceDeal(r: Record<string, unknown>): Deal {
+  const plan = isPlan(r.plan) ? r.plan : "Founder";
+  const pricing = PLAN_PRICING[plan];
   return {
     id: String(r.id),
     company: String(r.company),
@@ -114,7 +130,11 @@ function coerceDeal(r: Record<string, unknown>): Deal {
     contact_name: r.contact_name == null ? null : String(r.contact_name),
     contact_email: r.contact_email == null ? null : String(r.contact_email),
     contact_phone: r.contact_phone == null ? null : String(r.contact_phone),
-    value: r.value == null ? null : Number(r.value),
+    plan,
+    setupFee: pricing.setupFee,
+    mrr: pricing.mrr,
+    annual: annualValue(plan),
+    firstYear: firstYearValue(plan),
     stage: String(r.stage) as Stage,
     owner_id: r.owner_id == null ? null : String(r.owner_id),
     owner_name: r.owner_name == null ? null : String(r.owner_name),
@@ -141,20 +161,27 @@ function scopedWithFilters(user: SessionUser, f: DealFilters): DealQueryScope {
   const next = () => scope.args.length + extraArgs.length + 1;
 
   if (f.agentId) {
-    extra.push(`owner_id = $${next()}`);
+    extra.push(`owner_id = ${next()}`);
     extraArgs.push(f.agentId);
   }
   if (f.stage) {
-    extra.push(`stage = $${next()}`);
+    extra.push(`stage = ${next()}`);
     extraArgs.push(f.stage);
   }
-  if (f.minValue != null && Number.isFinite(f.minValue)) {
-    extra.push(`value >= $${next()}`);
-    extraArgs.push(f.minValue);
+  if (f.plan) {
+    extra.push(`plan = ${next()}`);
+    extraArgs.push(f.plan);
   }
-  if (f.maxValue != null && Number.isFinite(f.maxValue)) {
-    extra.push(`value <= $${next()}`);
-    extraArgs.push(f.maxValue);
+  // MRR is derived from the plan in code (not a column), so match it with a
+  // CASE expression over the plan constants — Founder 249 / Studio 499.
+  const mrrExpr = `case plan when 'Founder' then ${PLAN_PRICING.Founder.mrr} else ${PLAN_PRICING.Studio.mrr} end`;
+  if (f.minMrr != null && Number.isFinite(f.minMrr)) {
+    extra.push(`${mrrExpr} >= ${next()}`);
+    extraArgs.push(f.minMrr);
+  }
+  if (f.maxMrr != null && Number.isFinite(f.maxMrr)) {
+    extra.push(`${mrrExpr} <= ${next()}`);
+    extraArgs.push(f.maxMrr);
   }
 
   if (extra.length === 0) return scope;
@@ -233,7 +260,7 @@ export const listDeals = createServerFn({ method: "POST" })
       const user = await readSession();
       if (!user) return { ok: false, reason: "not-signed-in" };
       const db = sql();
-      const q = scopedWithFilters(user, data ?? { agentId: null, stage: null, minValue: null, maxValue: null });
+      const q = scopedWithFilters(user, data ?? { agentId: null, stage: null, plan: null, minMrr: null, maxMrr: null });
       const rows = await db.query(q.sql, q.args);
       return { ok: true, deals: rows.map((r) => coerceDeal(r as Record<string, unknown>)) };
     } catch (err) {
@@ -302,11 +329,6 @@ export const getDealDetail = createServerFn({ method: "POST" })
     }
   });
 
-function cleanValue(v: number | null | undefined): number | null {
-  if (v == null || !Number.isFinite(v)) return null;
-  return Math.round(v * 100) / 100;
-}
-
 /** Create a deal. Agents are always assigned to themselves; only owners assign. */
 export const createDeal = createServerFn({ method: "POST" })
   .validator((d: DealInput) => d)
@@ -317,17 +339,19 @@ export const createDeal = createServerFn({ method: "POST" })
       if (!user) return { ok: false, reason: "not-signed-in" };
       const company = (data.company ?? "").trim();
       if (!company || !STAGE_SET.has(data.stage)) return { ok: false, reason: "invalid" };
+      if (data.plan !== undefined && !isPlan(data.plan)) return { ok: false, reason: "invalid" };
+      const plan = data.plan ?? "Founder";
       const db = sql();
       const ownerId = user.role === "owner" && data.ownerId ? data.ownerId : user.id;
       const rows = await db`
-        insert into deals (company, contact_id, contact_name, contact_email, contact_phone, value, stage, owner_id, next_step, notes)
+        insert into deals (company, contact_id, contact_name, contact_email, contact_phone, plan, stage, owner_id, next_step, notes)
         values (
           ${company},
           ${data.contactId || null},
           ${data.contactName?.trim() || null},
           ${data.contactEmail?.trim() || null},
           ${data.contactPhone?.trim() || null},
-          ${cleanValue(data.value)},
+          ${plan},
           ${data.stage},
           ${ownerId},
           ${data.nextStep?.trim() || null},
@@ -375,7 +399,10 @@ export const updateDeal = createServerFn({ method: "POST" })
       if (data.contactPhone !== undefined) push("contact_phone", data.contactPhone?.trim() || null);
       // undefined → leave the link untouched; null → clear it (denormalized fields remain)
       if (data.contactId !== undefined) push("contact_id", data.contactId || null);
-      if (data.value !== undefined) push("value", cleanValue(data.value));
+      if (data.plan !== undefined) {
+        if (!isPlan(data.plan)) return { ok: false, reason: "invalid" };
+        push("plan", data.plan);
+      }
       if (data.stage !== undefined) push("stage", data.stage);
       if (user.role === "owner" && data.ownerId !== undefined) push("owner_id", data.ownerId || null);
       if (data.nextStep !== undefined) push("next_step", data.nextStep?.trim() || null);
