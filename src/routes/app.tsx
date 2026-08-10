@@ -18,6 +18,8 @@ const NAV = [
   { to: "/app/resources", label: "Resources", icon: "resources" },
   { to: "/app/reports", label: "Reports", icon: "reports" },
   { to: "/app/commissions", label: "Commissions", icon: "commissions" },
+  // Owner-only admin — hidden for agents.
+  { to: "/app/agents", label: "Agents", icon: "agents", ownerOnly: true },
 ] as const;
 
 function NavIcon({ icon }: { icon: string }) {
@@ -69,6 +71,15 @@ function NavIcon({ icon }: { icon: string }) {
         <svg {...common} aria-hidden="true">
           <path d="M12 2v20" />
           <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+        </svg>
+      );
+    case "agents":
+      return (
+        <svg {...common} aria-hidden="true">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+          <circle cx="9" cy="7" r="4" />
+          <path d="M19 8v6" />
+          <path d="M22 11h-6" />
         </svg>
       );
     default:
@@ -154,20 +165,22 @@ function SidebarContent({ user }: { user: SessionUser }) {
           Workspace
         </p>
         <nav className="flex flex-col gap-1">
-          {NAV.map((item) => (
-            <Link
-              key={item.to}
-              to={item.to}
-              activeOptions={item.to === "/app" ? { exact: true } : undefined}
-              activeProps={{ className: "nav-link nav-link-active" }}
-              inactiveProps={{ className: "nav-link" }}
-            >
-              <span className="text-white/50">
-                <NavIcon icon={item.icon} />
-              </span>
-              {item.label}
-            </Link>
-          ))}
+          {NAV.filter((item) => !("ownerOnly" in item) || item.ownerOnly !== true || user.role === "owner").map(
+            (item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                activeOptions={item.to === "/app" ? { exact: true } : undefined}
+                activeProps={{ className: "nav-link nav-link-active" }}
+                inactiveProps={{ className: "nav-link" }}
+              >
+                <span className="text-white/50">
+                  <NavIcon icon={item.icon} />
+                </span>
+                {item.label}
+              </Link>
+            ),
+          )}
         </nav>
       </div>
 

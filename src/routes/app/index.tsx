@@ -21,6 +21,7 @@ import {
   type Stage,
 } from "~/lib/pipeline";
 import { listContacts, type Contact } from "~/lib/contacts";
+import { reassignDeal } from "~/lib/agents";
 import {
   PLANS,
   PLAN_PRICING,
@@ -880,6 +881,7 @@ const ACTIVITY_META: Record<string, { icon: React.ReactNode; label: string }> = 
 function DealDetailDrawer({
   dealId,
   me,
+  users,
   onClose,
   onEdit,
   onChanged,
@@ -887,6 +889,7 @@ function DealDetailDrawer({
 }: {
   dealId: string;
   me: PipelineUser;
+  users: PipelineUser[];
   onClose: () => void;
   onEdit: (deal: Deal) => void;
   onChanged: () => void;
@@ -910,6 +913,8 @@ function DealDetailDrawer({
   const [feeBusy, setFeeBusy] = useState(false);
   const [feeError, setFeeError] = useState<string | null>(null);
   const [stageMoveBusy, setStageMoveBusy] = useState(false);
+  const [assignBusy, setAssignBusy] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1034,6 +1039,33 @@ function DealDetailDrawer({
     }
   }
 
+  /** Owner-only: reassign the deal to another user, live from the drawer. */
+  async function handleReassign(newOwnerId: string) {
+    if (state.status !== "ready" || assignBusy || newOwnerId === state.deal.owner_id) return;
+    setAssignBusy(true);
+    setAssignError(null);
+    try {
+      const res = await reassignDeal({ data: { dealId: state.deal.id, newOwnerId } });
+      if (!res.ok) {
+        if (res.reason === "not-signed-in") window.location.assign("/");
+        else setAssignError(res.message);
+        return;
+      }
+      const next = users.find((u) => u.id === newOwnerId);
+      setState((s) =>
+        s.status === "ready"
+          ? { ...s, deal: { ...s.deal, owner_id: newOwnerId, owner_name: next?.name ?? null } }
+          : s,
+      );
+      notify(`Assigned to ${next?.name ?? "new owner"}`);
+      onChanged();
+    } catch {
+      setAssignError("Something went wrong. Please try again.");
+    } finally {
+      setAssignBusy(false);
+    }
+  }
+
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={onClose} />
@@ -1093,11 +1125,43 @@ function DealDetailDrawer({
                 </div>
                 <div className="glass rounded-2xl p-4">
                   <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
-                    Owner
+                    {me.role === "owner" ? "Assigned to" : "Owner"}
                   </p>
-                  <p className="mt-1.5 truncate text-sm font-medium text-fg">
-                    {state.deal.owner_name || (me.role === "owner" ? "Unassigned" : "You")}
-                  </p>
+                  {me.role === "owner" ? (
+                    <>
+                      <select
+                        value={state.deal.owner_id ?? ""}
+                        onChange={(e) => void handleReassign(e.target.value)}
+                        disabled={assignBusy}
+                        className="select-dark select-dark-sm mt-2 w-full"
+                        aria-label="Assigned to"
+                      >
+                        {state.deal.owner_id ? null : (
+                          <option value="" disabled>
+                            — Unassigned —
+                          </option>
+                        )}
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name}
+                            {u.id === me.id ? " (you)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      {assignError ? (
+                        <p
+                          role="alert"
+                          className="mt-2 rounded-lg border border-red-400/20 bg-red-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-red-300"
+                        >
+                          {assignError}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="mt-1.5 truncate text-sm font-medium text-fg">
+                      {state.deal.owner_name || "You"}
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -1931,6 +1995,7 @@ function PipelinePage() {
         <DealDetailDrawer
           dealId={detailId}
           me={me}
+          users={users}
           onClose={() => setDetailId(null)}
           onEdit={openEdit}
           onChanged={refresh}
