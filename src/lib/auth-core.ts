@@ -10,7 +10,6 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getCookie, getRequestProtocol, setCookie } from "@tanstack/react-start/server";
 import { sql } from "~/db";
-import type { Plan } from "./pricing";
 
 export type Role = "owner" | "agent";
 
@@ -25,12 +24,12 @@ export const SESSION_COOKIE = "operion_crm_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const SESSION_TTL_S = 30 * 24 * 60 * 60;
 
-/** Seed credentials — created once, on first schema init (see `seedIfNeeded`). */
+/** Seed credential — created once, on first schema init (see `seedIfNeeded`).
+ *  The owner account is the ONLY seeded account; the CRM starts with empty
+ *  deals/contacts tables and no agents (agents are added later via the admin). */
 const SEED_OWNER_EMAIL = "owner@operioncrm.com";
-const SEED_AGENT_EMAIL = "agent@operioncrm.com";
-/** Randomly generated throwaway passwords (override via env before first seed). */
+/** Randomly generated throwaway password (override via env before first seed). */
 const SEED_OWNER_PASSWORD = process.env.SEED_OWNER_PASSWORD ?? "cl4P84S384Yi9XLE";
-const SEED_AGENT_PASSWORD = process.env.SEED_AGENT_PASSWORD ?? "uFGRZvzbpduDqcTE";
 
 /* ------------------------------------------------------------------ */
 /* Password hashing (Node built-in scrypt — no bcrypt dependency)      */
@@ -84,7 +83,7 @@ function cookieOptions(expires: Date | null): Record<string, unknown> {
  * Existing databases are upgraded exactly once: the first run that sees a
  * stale/missing marker runs the full ensure and then writes the new version.
  */
-export const SCHEMA_VERSION = "1";
+export const SCHEMA_VERSION = "2";
 
 export const SCHEMA_SQL = `
   -- Schema version marker row (key = 'schema_version'). schemaIsCurrent reads
@@ -193,7 +192,7 @@ export async function seedIfNeeded(db: ReturnType<typeof sql>): Promise<void> {
   if (count > 0) return; // seed only when the tables are first created
 
   try {
-    await seedAccountsAndDemoData(db);
+    await seedOwner(db);
   } catch (err) {
     // A concurrent warmer (startup kick racing the first login on a brand-new
     // database) can seed between our count check and the insert. Re-check
@@ -205,24 +204,16 @@ export async function seedIfNeeded(db: ReturnType<typeof sql>): Promise<void> {
   }
 }
 
-async function seedAccountsAndDemoData(db: ReturnType<typeof sql>): Promise<void> {
-  const seeded = await db`
+async function seedOwner(db: ReturnType<typeof sql>): Promise<void> {
+  const [ownerRow] = await db`
     insert into users (name, email, password_hash, role) values
-      ('Owner',        ${SEED_OWNER_EMAIL}, ${hashPassword(SEED_OWNER_PASSWORD)}, 'owner'),
-      ('Demo Agent',   ${SEED_AGENT_EMAIL}, ${hashPassword(SEED_AGENT_PASSWORD)}, 'agent')
+      ('Owner', ${SEED_OWNER_EMAIL}, ${hashPassword(SEED_OWNER_PASSWORD)}, 'owner')
     returning id, role
   `;
-  const ownerRow = seeded.find((u) => u.role === "owner");
-  const agentRow = seeded.find((u) => u.role === "agent");
-  if (!ownerRow || !agentRow) throw new Error("[operion-crm] seed failed: owner/agent row missing");
-  const ownerId = String(ownerRow.id);
-  const agentId = String(agentRow.id);
+  if (!ownerRow) throw new Error("[operion-crm] seed failed: owner row missing");
 
-  await seedDemoDeals(db, ownerId, agentId);
-
-  const message = `[operion-crm] Seeded initial accounts (change these in the admin area):
-  owner  -> ${SEED_OWNER_EMAIL} / ${SEED_OWNER_PASSWORD}
-  agent  -> ${SEED_AGENT_EMAIL} / ${SEED_AGENT_PASSWORD}`;
+  const message = `[operion-crm] Seeded owner account (change this in the admin area):
+  owner -> ${SEED_OWNER_EMAIL} / ${SEED_OWNER_PASSWORD}`;
   console.log(message);
   try {
     const { mkdir, writeFile } = await import("node:fs/promises");
@@ -231,232 +222,6 @@ async function seedAccountsAndDemoData(db: ReturnType<typeof sql>): Promise<void
   } catch {
     /* non-fatal — the server log above is the source of truth */
   }
-}
-
-/* ------------------------------------------------------------------ */
-/* Contacts backfill (idempotent, live-DB safe)                        */
-/* ------------------------------------------------------------------ */
-
-/**
- * Upgrades existing databases (where users already exist, so the first-run
- * seed never runs): when the contacts table is still empty AND no deal has a
- * contact_id yet, create a contact row for each demo deal's contact and link
- * deals to contacts by matching contact_email. Safe to re-run — once any
- * contact exists or any deal is linked, it does nothing.
- */
-export async function backfillDemoContactsIfNeeded(
-  db: ReturnType<typeof sql>,
-): Promise<void> {
-  try {
-    const [{ c }] = await db`select count(*)::int as c from contacts`;
-    if (c > 0) return;
-    const [{ n }] = await db`select count(*)::int as n from deals where contact_id is not null`;
-    if (n > 0) return;
-
-    for (const d of DEMO_DEALS) {
-      await db`
-        insert into contacts (name, company, email, phone, notes)
-        values (${d.contact}, ${d.company}, ${d.email}, ${d.phone}, ${d.notes})
-      `;
-    }
-    await db`
-      update deals d
-      set contact_id = c.id
-      from contacts c
-      where c.email = d.contact_email and d.contact_email is not null
-    `;
-    console.log("[operion-crm] Backfilled demo contacts + linked demo deals by email.");
-  } catch (err) {
-    // Never block login/schema-ensure — log and move on.
-    console.error("[operion-crm] backfillDemoContactsIfNeeded failed:", err);
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* Demo seed data (deals + activities)                                 */
-/* ------------------------------------------------------------------ */
-
-interface DemoDeal {
-  key: string;
-  company: string;
-  contact: string;
-  email: string;
-  phone: string;
-  plan: Plan;
-  stage: string;
-  owner: "owner" | "agent";
-  nextStep: string;
-  notes: string;
-  createdDaysAgo: number;
-  /** When a closed deal actually closed (won/lost) — drives its activity timestamps. */
-  closedDaysAgo?: number;
-}
-
-/**
- * Owner-specified demo prospects. Every deal is an Operion subscription sale:
- * `plan` is the only pricing field, and all values are computed from it in
- * src/lib/pricing.ts (never stored, never typed).
- */
-const DEMO_DEALS: DemoDeal[] = [
-  {
-    key: "hudson",
-    company: "Hudson Properties",
-    contact: "Daniel Hudson",
-    email: "daniel@hudsonprops.com",
-    phone: "+1 (312) 555-0147",
-    plan: "Studio",
-    stage: "Negotiation",
-    owner: "owner",
-    nextStep: "Circulate revised MSA — annual Studio terms at $499/mo",
-    notes: "Owner of 4 commercial properties; wants one CRM for tenant and lease relationships. Negotiating on onboarding scope.",
-    createdDaysAgo: 18,
-  },
-  {
-    key: "bridgewater",
-    company: "Bridgewater Holdings",
-    contact: "Vivian Liu",
-    email: "vivian@bridgewaterholdings.com",
-    phone: "+1 (212) 555-0163",
-    plan: "Studio",
-    stage: "Proposal",
-    owner: "agent",
-    nextStep: "Follow up on proposal sent Tuesday",
-    notes: "Family office managing 3 LLCs — consolidating entity contacts and deal flow. Proposal v1 includes onboarding and priority support.",
-    createdDaysAgo: 12,
-  },
-  {
-    key: "sarah-chen",
-    company: "Sarah Chen",
-    contact: "Sarah Chen",
-    email: "sarah@chenstudios.co",
-    phone: "+1 (415) 555-0129",
-    plan: "Founder",
-    stage: "Meeting",
-    owner: "agent",
-    nextStep: "Run product demo for both e-commerce brands",
-    notes: "Solo entrepreneur running 2 e-commerce brands; wants pipeline and contacts in one place. Founder fits her volume.",
-    createdDaysAgo: 8,
-  },
-  {
-    key: "meridian",
-    company: "Meridian Group",
-    contact: "Robert Okafor",
-    email: "robert@meridiangroup.io",
-    phone: "+1 (646) 555-0174",
-    plan: "Studio",
-    stage: "Contacted",
-    owner: "owner",
-    nextStep: "Book intro call for next week",
-    notes: "PE-backed operator with 5 portfolio companies. Interested in per-entity pipelines under one account.",
-    createdDaysAgo: 6,
-  },
-  {
-    key: "ortega",
-    company: "James Ortega",
-    contact: "James Ortega",
-    email: "james@ortegaconsulting.com",
-    phone: "+1 (305) 555-0136",
-    plan: "Founder",
-    stage: "Lead",
-    owner: "owner",
-    nextStep: "Send intro deck and discovery questions",
-    notes: "Independent consultant managing multiple client entities. Referred by a mutual contact.",
-    createdDaysAgo: 3,
-  },
-  {
-    key: "bluebird",
-    company: "Bluebird Bookkeeping",
-    contact: "Priya Raman",
-    email: "priya@bluebirdbookkeeping.com",
-    phone: "+1 (206) 555-0158",
-    plan: "Founder",
-    stage: "Closed Won",
-    owner: "agent",
-    nextStep: "Send welcome kit and schedule onboarding",
-    notes: "Signed Founder (12-month agreement). Setup fee invoiced, first month billed. Closed this month.",
-    createdDaysAgo: 20,
-    closedDaysAgo: 7,
-  },
-  {
-    key: "summit",
-    company: "Summit Capital Partners",
-    contact: "Theodore Vance",
-    email: "tvance@summitcapital.partners",
-    phone: "+1 (617) 555-0119",
-    plan: "Studio",
-    stage: "Closed Lost",
-    owner: "owner",
-    nextStep: "",
-    notes: "Went with a competitor on price. Worth revisiting next quarter with a different packaging angle.",
-    createdDaysAgo: 26,
-    closedDaysAgo: 20,
-  },
-];
-
-/** Timestamps for the demo data, relative to seed time so the board never looks stale. */
-function daysAgo(days: number, hours = 0): string {
-  return new Date(Date.now() - days * 86_400_000 - hours * 3_600_000).toISOString();
-}
-
-/** First-run demo data: 7 Operion prospects across every stage + activities on most of them. */
-async function seedDemoDeals(
-  db: ReturnType<typeof sql>,
-  ownerId: string,
-  agentId: string,
-): Promise<void> {
-  const ids: Record<string, string> = {};
-  for (const d of DEMO_DEALS) {
-    const owner = d.owner === "owner" ? ownerId : agentId;
-    // Closed deals get a real close date (won/lost) so MRR reporting's
-    // "closed this month / this quarter" buckets work from the first run.
-    const closedAt =
-      d.stage === "Closed Won" || d.stage === "Closed Lost"
-        ? daysAgo(d.closedDaysAgo ?? d.createdDaysAgo)
-        : null;
-    const [row] = await db`
-      insert into deals (
-        company, contact_name, contact_email, contact_phone, plan, stage,
-        owner_id, next_step, notes, created_at, updated_at, closed_at
-      ) values (
-        ${d.company}, ${d.contact}, ${d.email}, ${d.phone}, ${d.plan}, ${d.stage},
-        ${owner}, ${d.nextStep || null}, ${d.notes}, ${daysAgo(d.createdDaysAgo)},
-        ${daysAgo(d.createdDaysAgo)}, ${closedAt}
-      )
-      returning id
-    `;
-    ids[d.key] = String(row.id);
-  }
-
-  await db`
-    insert into activities (deal_id, type, summary, author_id, created_at) values
-      (${ids.hudson},    'stage',   'Moved to Negotiation',                    ${ownerId}, ${daysAgo(8)}),
-      (${ids.hudson},    'meeting', 'Negotiation call — annual Studio terms at $499/mo', ${ownerId}, ${daysAgo(1, 4)}),
-      (${ids.bridgewater}, 'email', 'Sent proposal with onboarding + priority support', ${agentId}, ${daysAgo(3, 6)}),
-      (${ids.bridgewater}, 'call',  'Discovery call — 30 min, went well',      ${agentId}, ${daysAgo(2, 3)}),
-      (${ids["sarah-chen"]}, 'meeting', 'Demo scheduled for this week',         ${agentId}, ${daysAgo(1, 2)}),
-      (${ids.meridian},  'email',  'Sent intro email and company overview',    ${ownerId}, ${daysAgo(2, 5)}),
-      (${ids.ortega},    'note',   'Deal created from referral',               ${ownerId}, ${daysAgo(1)}),
-      (${ids.bluebird},  'email',  'Sent 12-month Founder agreement',          ${agentId}, ${daysAgo(12)}),
-      (${ids.bluebird},  'stage',  'Closed Won — contract signed',             ${agentId}, ${daysAgo(7)}),
-      (${ids.summit},    'note',   'Lost to competitor on price',              ${ownerId}, ${daysAgo(20)}),
-      (${ids.summit},    'stage',  'Closed Lost',                              ${ownerId}, ${daysAgo(20, 1)})
-  `;
-
-  // Demo commission: Bluebird (Closed Won, Founder) already collected its setup
-  // fee 3 days ago, so fresh installs show one earned commission ($625).
-  await db`
-    update deals set setup_fee_collected = true, setup_fee_collected_at = ${daysAgo(3)}
-    where id = ${ids.bluebird}
-  `;
-
-  // Keep last_activity_at in sync with each deal's most recent activity.
-  await db`
-    update deals d set last_activity_at = a.max_at
-    from (
-      select deal_id, max(created_at) as max_at from activities group by deal_id
-    ) a
-    where a.deal_id = d.id
-  `;
 }
 
 /* ------------------------------------------------------------------ */
@@ -529,12 +294,11 @@ export async function markSchemaCurrent(db: ReturnType<typeof sql>): Promise<voi
   `;
 }
 
-/** Full ensure: idempotent DDL + first-run seed + contacts backfill + version marker. */
+/** Full ensure: idempotent DDL + first-run owner seed + version marker. */
 export async function ensureSchemaFull(db: ReturnType<typeof sql>): Promise<void> {
   const t0 = Date.now();
   await ensureSchemaCore(db);
   await seedIfNeeded(db);
-  await backfillDemoContactsIfNeeded(db);
   await markSchemaCurrent(db);
   console.log(`[operion-crm] schema ensured (v${SCHEMA_VERSION}) in ${Date.now() - t0}ms`);
 }

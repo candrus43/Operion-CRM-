@@ -993,7 +993,7 @@ function currentQuarterBoundsUtc(now: Date): { start: Date; end: Date } {
  * constants (PLAN_PRICING / STAGE_PROBABILITY) — nothing is stored or typed.
  *
  * Calendar buckets (month/quarter) use UTC on the close date (closed_at), the
- * same clock the demo data and the server run on.
+ * same clock the server and the DB timestamps run on.
  */
 export const reportsSummary = createServerFn({ method: "POST" }).handler(
   async (): Promise<ReportsSummaryResult> => {
