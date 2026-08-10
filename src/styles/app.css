@@ -283,6 +283,39 @@
     0 0 34px -12px rgba(139, 92, 246, 0.45);
 }
 
+/* Custom select — native <select> styled as an Operion dropdown.
+   appearance:none strips the OS arrow; the chevron is an inline SVG
+   background-image (most reliable across Chromium/Firefox/Safari). */
+.select-dark {
+  @apply w-full rounded-xl border border-white/[0.08] px-4 py-3 pr-10 text-sm text-fg transition-all duration-300 outline-none;
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: #0c0c10;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239b9ba4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.85rem center;
+  background-size: 1rem 1rem;
+  cursor: pointer;
+}
+.select-dark:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.select-dark:focus {
+  border-color: rgba(167, 139, 250, 0.55);
+  background-color: #101017;
+  box-shadow:
+    0 0 0 3px rgba(139, 92, 246, 0.16),
+    0 0 34px -12px rgba(139, 92, 246, 0.45);
+}
+.select-dark option {
+  background-color: #0c0c10;
+  color: var(--color-fg);
+}
+/* Compact variant for filter bars (36px tall, tighter padding) */
+.select-dark-sm {
+  @apply h-9 py-0 pl-3 pr-8 text-[13px];
+}
+
 /* Sidebar nav links */
 .nav-link {
   @apply flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium text-muted transition-all duration-300;

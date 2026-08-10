@@ -406,8 +406,7 @@ function FilterBar({
   users: PipelineUser[];
   me: PipelineUser;
 }) {
-  const selectCls =
-    "input-dark h-9 w-full appearance-none bg-[#0c0c10] py-0 pl-3 pr-8 text-[13px] [&>option]:bg-[#0c0c10] [&>option]:text-fg";
+  const selectCls = "select-dark select-dark-sm";
   return (
     <div className="glass-deep mb-6 flex flex-wrap items-end gap-x-4 gap-y-3 rounded-2xl px-4 py-3.5">
       <label className="flex min-w-36 flex-col gap-1.5">
@@ -662,7 +661,7 @@ function DealFormModal({
             <select
               value={values.contactId}
               onChange={(e) => handleContactSelect(e.target.value)}
-              className="input-dark bg-[#0c0c10] [&>option]:bg-[#0c0c10] [&>option]:text-fg"
+              className="select-dark"
             >
               <option value="">— None (fill in manually below) —</option>
               {contacts.map((c) => (
@@ -714,7 +713,7 @@ function DealFormModal({
             <select
               value={values.plan}
               onChange={(e) => set({ plan: e.target.value as Plan })}
-              className="input-dark bg-[#0c0c10] [&>option]:bg-[#0c0c10] [&>option]:text-fg"
+              className="select-dark"
             >
               {PLANS.map((p) => (
                 <option key={p} value={p}>
@@ -729,7 +728,7 @@ function DealFormModal({
             <select
               value={values.stage}
               onChange={(e) => set({ stage: e.target.value as Stage })}
-              className="input-dark bg-[#0c0c10] [&>option]:bg-[#0c0c10] [&>option]:text-fg"
+              className="select-dark"
             >
               {STAGES.map((s) => (
                 <option key={s} value={s}>
@@ -785,7 +784,7 @@ function DealFormModal({
               <select
                 value={values.ownerId}
                 onChange={(e) => set({ ownerId: e.target.value })}
-                className="input-dark bg-[#0c0c10] [&>option]:bg-[#0c0c10] [&>option]:text-fg"
+                className="select-dark"
               >
                 {users.map((u) => (
                   <option key={u.id} value={u.id}>
