@@ -16,6 +16,7 @@ import { readSession, type SessionUser } from "./auth-core";
 import {
   COMMISSION_RATE,
   PLAN_PRICING,
+  STAGE_PROBABILITY,
   annualValue,
   commissionFor,
   firstYearValue,
@@ -72,6 +73,8 @@ export interface Deal {
   next_step: string | null;
   notes: string | null;
   last_activity_at: string | null;
+  /** When a deal closed (won or lost) — reliable close date for MRR reporting. */
+  closed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -159,6 +162,7 @@ function coerceDeal(r: Record<string, unknown>): Deal {
     notes: r.notes == null ? null : String(r.notes),
     last_activity_at:
       r.last_activity_at == null ? null : new Date(r.last_activity_at as Date).toISOString(),
+    closed_at: r.closed_at == null ? null : new Date(r.closed_at as Date).toISOString(),
     created_at: new Date(r.created_at as Date).toISOString(),
     updated_at: new Date(r.updated_at as Date).toISOString(),
   };
@@ -486,8 +490,16 @@ export const moveDealStage = createServerFn({ method: "POST" })
       const db = sql();
       const owned = await fetchOwnedDeal(db, user, data.dealId);
       if (!owned) return { ok: false, reason: "forbidden" };
+      // A deal that lands on a closed stage gets a close date (kept if it was
+      // already closed and is being re-moved between closed stages).
       await db`
-        update deals set stage = ${data.stage}, updated_at = now()
+        update deals
+        set stage = ${data.stage}, updated_at = now(),
+            closed_at = case
+              when ${data.stage} in ('Closed Won', 'Closed Lost')
+                then coalesce(closed_at, now())
+              else closed_at
+            end
         where id = ${data.dealId}
       `;
       return { ok: true };
@@ -625,10 +637,12 @@ export const markWon = createServerFn({ method: "POST" })
         };
       }
 
-      // Operion accepted — the payment link email is on its way. Close the deal.
+      // Operion accepted — the payment link email is on its way. Close the deal
+      // and stamp the close date (drives "closed this month / quarter" MRR).
       await db`
         update deals
-        set stage = 'Closed Won', last_activity_at = now(), updated_at = now()
+        set stage = 'Closed Won', last_activity_at = now(), updated_at = now(),
+            closed_at = coalesce(closed_at, now())
         where id = ${data.dealId}
       `;
       try {
@@ -807,10 +821,12 @@ export type CommissionSummaryResult =
   | { ok: false; reason: DbStatus };
 
 /**
- * Commission ledger for the current user: owner sees every Closed Won deal
- * (grouped per agent via `agents`), an agent sees only their own. Commission is
- * 25% of the plan's setup fee, computed here from pricing — never typed. Rows
- * order: collected deals first (newest collection), then uncollected by recency.
+ * Commission ledger for the current user. Commissions are the agents' ledger:
+ * an agent sees only their own Closed Won deals; the OWNER sees only AGENTS'
+ * deals — the owner's own commission rows are hidden (the owner watches MRR,
+ * not their own commissions). Commission is 25% of the plan's setup fee,
+ * computed here from pricing — never typed. Rows order: collected deals first
+ * (newest collection), then uncollected by recency.
  */
 export const commissionSummary = createServerFn({ method: "POST" }).handler(
   async (): Promise<CommissionSummaryResult> => {
@@ -819,7 +835,7 @@ export const commissionSummary = createServerFn({ method: "POST" }).handler(
       const user = await readSession();
       if (!user) return { ok: false, reason: "not-signed-in" };
       const db = sql();
-      const rows = await db`
+      let rows = await db`
         select d.id as deal_id, d.company, d.plan, d.owner_id, d.setup_fee_collected,
                d.setup_fee_collected_at, d.updated_at, u.name as owner_name
         from deals d left join users u on u.id = d.owner_id
@@ -827,6 +843,13 @@ export const commissionSummary = createServerFn({ method: "POST" }).handler(
           and (${user.role} = 'owner' or d.owner_id = ${user.id})
         order by d.setup_fee_collected_at desc nulls last, d.updated_at desc
       `;
+      if (user.role === "owner") {
+        // Commissions are the agents' ledger — the owner's own rows (and any
+        // unassigned rows) are hidden from the owner's view.
+        rows = rows.filter(
+          (r) => r.owner_id != null && String(r.owner_id) !== user.id,
+        );
+      }
 
       const ledger: CommissionRow[] = rows.map((r) => {
         const plan = isPlan(r.plan) ? r.plan : "Founder";
@@ -888,6 +911,210 @@ export const commissionSummary = createServerFn({ method: "POST" }).handler(
       return { ok: true, rows: ledger, totals, agents: agents ?? null };
     } catch (err) {
       console.error("[operion-crm] commissionSummary failed:", err);
+      return { ok: false, reason: "db-error" };
+    }
+  },
+);
+
+/* ------------------------------------------------------------------ */
+/* MRR reporting (owner's business view on the Commissions tab)        */
+/* ------------------------------------------------------------------ */
+
+/** One per-agent row of the MRR breakdown table. */
+export interface AgentMrrRow {
+  id: string;
+  name: string;
+  /** Sum of MRR across the agent's open deals (not Closed Won/Lost). */
+  openMrr: number;
+  /** Sum of open-deal MRR × stage probability (forecast). */
+  weightedMrr: number;
+  /** Sum of MRR across the agent's Closed Won deals (actual). */
+  closedWonMrr: number;
+  /** Total deals owned (any stage). */
+  dealCount: number;
+}
+
+export interface SummaryMetrics {
+  /** Sum of MRR across open deals (not Closed Won/Lost). FORECAST input. */
+  totalPipelineMrr: number;
+  /** Sum of open-deal MRR × stage probability. FORECAST. */
+  weightedPipelineMrr: number;
+  /** MRR of Closed Won deals closed in the current calendar month (actual). */
+  closedWonMrrThisMonth: number;
+  /** MRR of Closed Won deals closed in the current calendar quarter (actual). */
+  closedWonMrrThisQuarter: number;
+  /** Mean MRR of Closed Won deals, all time (actual). */
+  avgDealSize: number;
+  /** Closed Won ÷ (Closed Won + Closed Lost) as a percentage, 0 when none. */
+  winRate: number;
+  openDealCount: number;
+  closedWonCount: number;
+  closedLostCount: number;
+}
+
+export type ReportsSummaryResult =
+  | { ok: true; metrics: SummaryMetrics; agents: AgentMrrRow[] | null }
+  | { ok: false; reason: DbStatus };
+
+const OPEN_STAGE_SET = new Set<string>([
+  "Lead",
+  "Contacted",
+  "Meeting",
+  "Proposal",
+  "Negotiation",
+]);
+
+/** Round money to cents so displayed totals never carry float noise. */
+function roundMoney(v: number): number {
+  return Math.round(v * 100) / 100;
+}
+
+/** True when `d` (UTC) falls in the calendar month containing `now` (UTC). */
+function inCurrentMonthUtc(d: Date, now: Date): boolean {
+  return (
+    d.getUTCFullYear() === now.getUTCFullYear() &&
+    d.getUTCMonth() === now.getUTCMonth()
+  );
+}
+
+/** [start, end) bounds of the calendar quarter (UTC) containing `now`. */
+function currentQuarterBoundsUtc(now: Date): { start: Date; end: Date } {
+  const qStartMonth = Math.floor(now.getUTCMonth() / 3) * 3;
+  return {
+    start: new Date(Date.UTC(now.getUTCFullYear(), qStartMonth, 1)),
+    end: new Date(Date.UTC(now.getUTCFullYear(), qStartMonth + 3, 1)),
+  };
+}
+
+/**
+ * MRR summary for the Commissions tab (the owner's business view). Session
+ * scoped: the owner sees team-wide numbers (all deals), an agent sees only
+ * their own deals. All figures are computed from deal rows + the pricing
+ * constants (PLAN_PRICING / STAGE_PROBABILITY) — nothing is stored or typed.
+ *
+ * Calendar buckets (month/quarter) use UTC on the close date (closed_at), the
+ * same clock the demo data and the server run on.
+ */
+export const reportsSummary = createServerFn({ method: "POST" }).handler(
+  async (): Promise<ReportsSummaryResult> => {
+    if (!process.env.DATABASE_URL) return { ok: false, reason: "db-not-connected" };
+    try {
+      const user = await readSession();
+      if (!user) return { ok: false, reason: "not-signed-in" };
+      const db = sql();
+      // dealQueryScope: owner → every deal; agent → only their own.
+      const scope = dealQueryScope(user);
+      const rows = await runDynamicQuery(db, scope.sql, scope.args);
+      const deals = rows.map((r) => coerceDeal(r as Record<string, unknown>));
+
+      const now = new Date();
+      const { start: qStart, end: qEnd } = currentQuarterBoundsUtc(now);
+
+      let totalPipelineMrr = 0;
+      let weightedPipelineMrr = 0;
+      let closedWonMrrThisMonth = 0;
+      let closedWonMrrThisQuarter = 0;
+      let closedWonMrrAll = 0;
+      let openDealCount = 0;
+      let closedWonCount = 0;
+      let closedLostCount = 0;
+
+      for (const d of deals) {
+        if (d.stage === "Closed Won") {
+          closedWonCount += 1;
+          closedWonMrrAll += d.mrr;
+          if (d.closed_at) {
+            const closed = new Date(d.closed_at);
+            if (inCurrentMonthUtc(closed, now)) closedWonMrrThisMonth += d.mrr;
+            if (closed >= qStart && closed < qEnd) closedWonMrrThisQuarter += d.mrr;
+          }
+        } else if (d.stage === "Closed Lost") {
+          closedLostCount += 1;
+        } else if (OPEN_STAGE_SET.has(d.stage)) {
+          openDealCount += 1;
+          totalPipelineMrr += d.mrr;
+          weightedPipelineMrr += d.mrr * (STAGE_PROBABILITY[d.stage] ?? 0);
+        }
+      }
+
+      const wonPlusLost = closedWonCount + closedLostCount;
+      const winRate = wonPlusLost > 0 ? (closedWonCount / wonPlusLost) * 100 : 0;
+      const metrics: SummaryMetrics = {
+        totalPipelineMrr: roundMoney(totalPipelineMrr),
+        weightedPipelineMrr: roundMoney(weightedPipelineMrr),
+        closedWonMrrThisMonth: roundMoney(closedWonMrrThisMonth),
+        closedWonMrrThisQuarter: roundMoney(closedWonMrrThisQuarter),
+        avgDealSize: roundMoney(closedWonCount > 0 ? closedWonMrrAll / closedWonCount : 0),
+        winRate: Math.round(winRate * 10) / 10,
+        openDealCount,
+        closedWonCount,
+        closedLostCount,
+      };
+
+      // Per-agent breakdown (MRR only — commissions live in the ledger below).
+      // Owner: every role='agent' user, zeros included. Agent: their own row.
+      const byOwner = new Map<
+        string,
+        { openMrr: number; weightedMrr: number; closedWonMrr: number; dealCount: number }
+      >();
+      for (const d of deals) {
+        if (!d.owner_id) continue; // unassigned deals count in team metrics only
+        const cur =
+          byOwner.get(d.owner_id) ??
+          { openMrr: 0, weightedMrr: 0, closedWonMrr: 0, dealCount: 0 };
+        cur.dealCount += 1;
+        if (d.stage === "Closed Won") {
+          cur.closedWonMrr += d.mrr;
+        } else if (d.stage !== "Closed Lost") {
+          cur.openMrr += d.mrr;
+          cur.weightedMrr += d.mrr * (STAGE_PROBABILITY[d.stage] ?? 0);
+        }
+        byOwner.set(d.owner_id, cur);
+      }
+
+      let agents: AgentMrrRow[] | null = null;
+      if (user.role === "owner") {
+        const userRows = await db`select id, name, role from users order by name asc`;
+        agents = userRows
+          .filter((u) => String(u.role) === "agent")
+          .map((u) => {
+            const mine = byOwner.get(String(u.id)) ?? {
+              openMrr: 0,
+              weightedMrr: 0,
+              closedWonMrr: 0,
+              dealCount: 0,
+            };
+            return {
+              id: String(u.id),
+              name: String(u.name),
+              openMrr: roundMoney(mine.openMrr),
+              weightedMrr: roundMoney(mine.weightedMrr),
+              closedWonMrr: roundMoney(mine.closedWonMrr),
+              dealCount: mine.dealCount,
+            };
+          });
+      } else {
+        const mine = byOwner.get(user.id) ?? {
+          openMrr: 0,
+          weightedMrr: 0,
+          closedWonMrr: 0,
+          dealCount: 0,
+        };
+        agents = [
+          {
+            id: user.id,
+            name: user.name,
+            openMrr: roundMoney(mine.openMrr),
+            weightedMrr: roundMoney(mine.weightedMrr),
+            closedWonMrr: roundMoney(mine.closedWonMrr),
+            dealCount: mine.dealCount,
+          },
+        ];
+      }
+
+      return { ok: true, metrics, agents };
+    } catch (err) {
+      console.error("[operion-crm] reportsSummary failed:", err);
       return { ok: false, reason: "db-error" };
     }
   },

@@ -148,6 +148,13 @@ export const SCHEMA_SQL = `
   ALTER TABLE deals ADD COLUMN IF NOT EXISTS setup_fee_collected boolean NOT NULL DEFAULT false;
   ALTER TABLE deals ADD COLUMN IF NOT EXISTS setup_fee_collected_at timestamptz;
 
+  -- MRR reporting needs a reliable close date on closed deals. Idempotent so it
+  -- upgrades databases created before this column existed. Closed Won rows that
+  -- predate the column are backfilled from updated_at (their last write) on the
+  -- next schema run - the backfill is safe to re-run because it only fills NULLs
+  ALTER TABLE deals ADD COLUMN IF NOT EXISTS closed_at timestamptz;
+  UPDATE deals SET closed_at = updated_at WHERE closed_at IS NULL AND stage = 'Closed Won';
+
   CREATE TABLE IF NOT EXISTS resources (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
@@ -369,14 +376,20 @@ async function seedDemoDeals(
   const ids: Record<string, string> = {};
   for (const d of DEMO_DEALS) {
     const owner = d.owner === "owner" ? ownerId : agentId;
+    // Closed deals get a real close date (won/lost) so MRR reporting's
+    // "closed this month / this quarter" buckets work from the first run.
+    const closedAt =
+      d.stage === "Closed Won" || d.stage === "Closed Lost"
+        ? daysAgo(d.closedDaysAgo ?? d.createdDaysAgo)
+        : null;
     const [row] = await db`
       insert into deals (
         company, contact_name, contact_email, contact_phone, plan, stage,
-        owner_id, next_step, notes, created_at, updated_at
+        owner_id, next_step, notes, created_at, updated_at, closed_at
       ) values (
         ${d.company}, ${d.contact}, ${d.email}, ${d.phone}, ${d.plan}, ${d.stage},
         ${owner}, ${d.nextStep || null}, ${d.notes}, ${daysAgo(d.createdDaysAgo)},
-        ${daysAgo(d.createdDaysAgo)}
+        ${daysAgo(d.createdDaysAgo)}, ${closedAt}
       )
       returning id
     `;
