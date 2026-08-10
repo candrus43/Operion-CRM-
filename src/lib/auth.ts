@@ -19,7 +19,7 @@ import { sql } from "~/db";
 
 export type { Role, SessionUser } from "./auth-core";
 import {
-  SCHEMA_SQL,
+  ensureSchemaCore,
   loginCore,
   logoutCore,
   readSession,
@@ -37,9 +37,8 @@ export const ensureSchema = createServerFn({ method: "GET" }).handler(async () =
     return { ok: false as const, reason: "db-not-connected" };
   }
   try {
-    const db = sql();
-    await db.unsafe(SCHEMA_SQL);
-    await seedIfNeeded(db);
+    await ensureSchemaCore(sql());
+    await seedIfNeeded(sql());
     return { ok: true as const };
   } catch (err) {
     console.error("[operion-crm] ensureSchema failed:", err);
@@ -110,11 +109,11 @@ export interface DealQueryScope {
 
 /**
  * Data-scoping helper for deals. Owners see every deal; agents see only the
- * deals they own. Use it from server functions with `sql().unsafe(scope.sql,
- * ...scope.args)`:
+ * deals they own. Use it from server functions with `db.query(scope.sql,
+ * scope.args)` (Neon's HTTP driver):
  *
  *   const scope = dealQueryScope(user);
- *   const rows = await db.unsafe(scope.sql, ...scope.args);
+ *   const rows = await db.query(scope.sql, scope.args);
  */
 export function dealQueryScope(user: SessionUser): DealQueryScope {
   if (user.role === "owner") {

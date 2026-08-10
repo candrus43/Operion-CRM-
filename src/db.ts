@@ -1,4 +1,13 @@
-import { neon } from "@neondatabase/serverless";
+import { neon, neonConfig } from "@neondatabase/serverless";
+
+// Optional override for local development/testing only: the Neon HTTP driver
+// normally POSTs to Neon's cloud `/sql` endpoint derived from the connection
+// string. Pointing NEON_FETCH_ENDPOINT at a local Neon-protocol proxy lets the
+// same driver talk to a local Postgres. Unset in production — never set on the
+// deployed hosts.
+if (process.env.NEON_FETCH_ENDPOINT) {
+  neonConfig.fetchEndpoint = process.env.NEON_FETCH_ENDPOINT;
+}
 
 /**
  * Server-only handle to the team's database (Neon serverless Postgres over HTTP).

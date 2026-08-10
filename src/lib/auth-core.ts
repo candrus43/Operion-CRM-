@@ -148,11 +148,19 @@ export async function seedIfNeeded(db: ReturnType<typeof sql>): Promise<void> {
   const [{ count }] = await db`select count(*)::int as count from users`;
   if (count > 0) return; // seed only when the tables are first created
 
-  await db`
+  const seeded = await db`
     insert into users (name, email, password_hash, role) values
       ('Owner',        ${SEED_OWNER_EMAIL}, ${hashPassword(SEED_OWNER_PASSWORD)}, 'owner'),
       ('Demo Agent',   ${SEED_AGENT_EMAIL}, ${hashPassword(SEED_AGENT_PASSWORD)}, 'agent')
+    returning id, role
   `;
+  const ownerRow = seeded.find((u) => u.role === "owner");
+  const agentRow = seeded.find((u) => u.role === "agent");
+  if (!ownerRow || !agentRow) throw new Error("[operion-crm] seed failed: owner/agent row missing");
+  const ownerId = String(ownerRow.id);
+  const agentId = String(agentRow.id);
+
+  await seedDemoDeals(db, ownerId, agentId);
 
   const message = `[operion-crm] Seeded initial accounts (change these in the admin area):
   owner  -> ${SEED_OWNER_EMAIL} / ${SEED_OWNER_PASSWORD}
@@ -165,6 +173,172 @@ export async function seedIfNeeded(db: ReturnType<typeof sql>): Promise<void> {
   } catch {
     /* non-fatal — the server log above is the source of truth */
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Demo seed data (deals + activities)                                 */
+/* ------------------------------------------------------------------ */
+
+interface DemoDeal {
+  key: string;
+  company: string;
+  contact: string;
+  email: string;
+  phone: string;
+  value: number;
+  stage: string;
+  owner: "owner" | "agent";
+  nextStep: string;
+  notes: string;
+  createdDaysAgo: number;
+}
+
+const DEMO_DEALS: DemoDeal[] = [
+  {
+    key: "acme",
+    company: "Acme Corp",
+    contact: "Dana Whitfield",
+    email: "dana@acmecorp.com",
+    phone: "+1 (415) 555-0142",
+    value: 12000,
+    stage: "Lead",
+    owner: "owner",
+    nextStep: "Send intro deck and discovery questions",
+    notes: "Inbound via the website — interested in the team plan.",
+    createdDaysAgo: 8,
+  },
+  {
+    key: "globex",
+    company: "Globex Industries",
+    contact: "Marcus Reed",
+    email: "marcus@globex.io",
+    phone: "+1 (212) 555-0188",
+    value: 45000,
+    stage: "Contacted",
+    owner: "agent",
+    nextStep: "Book kickoff call for next week",
+    notes: "Referred by a mutual contact. Warm lead.",
+    createdDaysAgo: 12,
+  },
+  {
+    key: "initech",
+    company: "Initech",
+    contact: "Peter Gibbons",
+    email: "peter@initech.com",
+    phone: "+1 (512) 555-0139",
+    value: 8500,
+    stage: "Meeting",
+    owner: "owner",
+    nextStep: "Prep product demo for the finance team",
+    notes: "Demo scheduled for Thursday — bring the reporting module.",
+    createdDaysAgo: 10,
+  },
+  {
+    key: "umbrella",
+    company: "Umbrella Health",
+    contact: "Claire Redfield",
+    email: "claire@umbrella.health",
+    phone: "+1 (646) 555-0166",
+    value: 120000,
+    stage: "Proposal",
+    owner: "agent",
+    nextStep: "Follow up on the proposal sent Tuesday",
+    notes: "Proposal v2 includes onboarding and priority support.",
+    createdDaysAgo: 16,
+  },
+  {
+    key: "stark",
+    company: "Stark Industries",
+    contact: "Pepper Potts",
+    email: "pepper@stark.com",
+    phone: "+1 (310) 555-0117",
+    value: 250000,
+    stage: "Negotiation",
+    owner: "owner",
+    nextStep: "Circulate revised MSA — price holds at 250k",
+    notes: "Legal is reviewing terms; they want a 6-month rollout.",
+    createdDaysAgo: 20,
+  },
+  {
+    key: "wayne",
+    company: "Wayne Enterprises",
+    contact: "Lucius Fox",
+    email: "lucius@wayne.com",
+    phone: "+1 (312) 555-0149",
+    value: 96000,
+    stage: "Closed Won",
+    owner: "agent",
+    nextStep: "Send welcome kit and schedule onboarding",
+    notes: "Signed a 12-month agreement. Renewal window in January.",
+    createdDaysAgo: 25,
+  },
+  {
+    key: "hooli",
+    company: "Hooli",
+    contact: "Gavin Belson",
+    email: "gavin@hooli.com",
+    phone: "+1 (650) 555-0124",
+    value: 18000,
+    stage: "Closed Lost",
+    owner: "owner",
+    nextStep: "",
+    notes: "Went with a competitor. Worth revisiting next quarter.",
+    createdDaysAgo: 22,
+  },
+];
+
+/** Timestamps for the demo data, relative to seed time so the board never looks stale. */
+function daysAgo(days: number, hours = 0): string {
+  return new Date(Date.now() - days * 86_400_000 - hours * 3_600_000).toISOString();
+}
+
+/** First-run demo data: ~7 deals across every stage + activities on most of them. */
+async function seedDemoDeals(
+  db: ReturnType<typeof sql>,
+  ownerId: string,
+  agentId: string,
+): Promise<void> {
+  const ids: Record<string, string> = {};
+  for (const d of DEMO_DEALS) {
+    const owner = d.owner === "owner" ? ownerId : agentId;
+    const [row] = await db`
+      insert into deals (
+        company, contact_name, contact_email, contact_phone, value, stage,
+        owner_id, next_step, notes, created_at, updated_at
+      ) values (
+        ${d.company}, ${d.contact}, ${d.email}, ${d.phone}, ${d.value}, ${d.stage},
+        ${owner}, ${d.nextStep || null}, ${d.notes}, ${daysAgo(d.createdDaysAgo)},
+        ${daysAgo(d.createdDaysAgo)}
+      )
+      returning id
+    `;
+    ids[d.key] = String(row.id);
+  }
+
+  await db`
+    insert into activities (deal_id, type, summary, author_id, created_at) values
+      (${ids.acme},  'note',    'Deal created from website inquiry',      ${ownerId}, ${daysAgo(8)}),
+      (${ids.globex}, 'email',  'Sent intro email and company overview',  ${agentId}, ${daysAgo(4, 5)}),
+      (${ids.globex}, 'call',   'Discovery call — 25 min, went well',     ${agentId}, ${daysAgo(2, 3)}),
+      (${ids.initech}, 'meeting', 'Demo with the finance team',           ${ownerId}, ${daysAgo(0, 5)}),
+      (${ids.umbrella}, 'stage', 'Moved to Proposal',                     ${agentId}, ${daysAgo(3, 6)}),
+      (${ids.umbrella}, 'email', 'Sent proposal v2 with onboarding',      ${agentId}, ${daysAgo(3, 2)}),
+      (${ids.stark},  'stage',  'Moved to Negotiation',                   ${ownerId}, ${daysAgo(8)}),
+      (${ids.stark},  'meeting','Negotiation call — price agreed at 250k',${ownerId}, ${daysAgo(1, 4)}),
+      (${ids.wayne},  'email',  'Sent 12-month agreement',                ${agentId}, ${daysAgo(12)}),
+      (${ids.wayne},  'stage',  'Closed Won — contract signed',           ${agentId}, ${daysAgo(9, 3)}),
+      (${ids.hooli},  'note',   'Lost to competitor this cycle',          ${ownerId}, ${daysAgo(15)}),
+      (${ids.hooli},  'stage',  'Closed Lost',                            ${ownerId}, ${daysAgo(15, 1)})
+  `;
+
+  // Keep last_activity_at in sync with each deal's most recent activity.
+  await db`
+    update deals d set last_activity_at = a.max_at
+    from (
+      select deal_id, max(created_at) as max_at from activities group by deal_id
+    ) a
+    where a.deal_id = d.id
+  `;
 }
 
 /* ------------------------------------------------------------------ */
@@ -198,6 +372,16 @@ export interface LoginCoreResult {
   error?: string;
 }
 
+/** Runs the schema DDL. Neon's `unsafe()` silently no-ops and a plain function
+ *  call throws; splitting into statements and running each as a tagged-template
+ *  call is the reliable path (one statement per HTTP query). */
+export async function ensureSchemaCore(db: ReturnType<typeof sql>): Promise<void> {
+  for (const statement of SCHEMA_SQL.split(";").map((s) => s.trim()).filter(Boolean)) {
+    const template = Object.assign([statement], { raw: [statement] }) as unknown as TemplateStringsArray;
+    await db(template);
+  }
+}
+
 export async function loginCore(emailInput: string, passwordInput: string): Promise<LoginCoreResult> {
   if (!process.env.DATABASE_URL) {
     return {
@@ -213,7 +397,7 @@ export async function loginCore(emailInput: string, passwordInput: string): Prom
   }
 
   const db = sql();
-  await db.unsafe(SCHEMA_SQL);
+  await ensureSchemaCore(db);
   await seedIfNeeded(db);
 
   const rows = await db`

@@ -463,6 +463,7 @@
   .animate-sheen,
   .animate-hue-slide,
   .rise-in,
+  .drawer-in,
   .sheen-overlay::before {
     animation: none !important;
   }
@@ -473,7 +474,52 @@
     transform: none !important;
   }
 
+  .drawer-in {
+    transform: none !important;
+  }
+
   html {
     scroll-behavior: auto;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Pipeline (kanban) extras
+--------------------------------------------------------------------------- */
+
+@keyframes drawer-in {
+  0% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.drawer-in {
+  animation: 0.45s cubic-bezier(0.16, 1, 0.3, 1) both drawer-in;
+}
+
+/* Thin, unobtrusive scrollbars for kanban columns and the board */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+.scroll-thin::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+}
+
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
 }
