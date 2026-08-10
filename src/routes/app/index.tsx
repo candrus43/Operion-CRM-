@@ -7,6 +7,7 @@ import {
   getDealDetail,
   listDeals,
   listUsers,
+  markWon,
   moveDealStage,
   updateDeal,
   type Activity,
@@ -103,6 +104,11 @@ function friendlyError(reason: DbStatus): string {
     default:
       return "Something went wrong. Please try again.";
   }
+}
+
+/** Effective customer email — live contact row preferred, else the deal's snapshot. */
+function effectiveDealEmail(contact: LinkedContact | null, deal: Deal): string | null {
+  return (contact?.email ?? deal.contact_email) || null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -205,6 +211,17 @@ const Icons = {
     <Svg>
       <path d="M12 20h9" />
       <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </Svg>
+  ),
+  send: (
+    <Svg>
+      <path d="m22 2-7 20-4-9-9-4Z" />
+      <path d="M22 2 11 13" />
+    </Svg>
+  ),
+  check: (
+    <Svg>
+      <path d="M20 6 9 17l-5-5" />
     </Svg>
   ),
 };
@@ -877,10 +894,15 @@ function DealDetailDrawer({
   >({ status: "loading" });
   const [notes, setNotes] = useState("");
   const [savingNotes, setSavingNotes] = useState(false);
+  const [markWonOpen, setMarkWonOpen] = useState(false);
+  const [markWonBusy, setMarkWonBusy] = useState(false);
+  const [markWonError, setMarkWonError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
+    setMarkWonOpen(false);
+    setMarkWonError(null);
     getDealDetail({ data: { dealId } }).then((res) => {
       if (cancelled) return;
       if (!res.ok) {
@@ -912,6 +934,31 @@ function DealDetailDrawer({
     setState((s) => (s.status === "ready" ? { ...s, deal: { ...s.deal, notes } } : s));
     notify("Notes saved");
     onChanged();
+  }
+
+  /** Mark Won — confirmed in a dialog, then POSTs the payment-link handoff to Operion. */
+  async function handleMarkWon() {
+    if (state.status !== "ready" || markWonBusy) return;
+    setMarkWonBusy(true);
+    setMarkWonError(null);
+    try {
+      const res = await markWon({ data: { dealId } });
+      if (!res.ok) {
+        if (res.reason === "not-signed-in") window.location.assign("/");
+        else setMarkWonError(res.message);
+        return;
+      }
+      setMarkWonOpen(false);
+      // Reflect the new stage in the open drawer, then refresh the board so the
+      // card moves to Closed Won (same refresh path as drag/create).
+      setState((s) => (s.status === "ready" ? { ...s, deal: res.deal } : s));
+      notify("Payment link sent — deal closed");
+      onChanged();
+    } catch {
+      setMarkWonError("Something went wrong. Please try again.");
+    } finally {
+      setMarkWonBusy(false);
+    }
   }
 
   return (
@@ -1019,6 +1066,42 @@ function DealDetailDrawer({
                   </div>
                 </div>
               </div>
+
+              {/* Mark Won — Operion payment-link handoff (Negotiation only) */}
+              {state.deal.stage === "Negotiation" ? (
+                <div className="mt-3 rounded-2xl border border-emerald-400/20 bg-emerald-500/[0.05] p-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMarkWonError(null);
+                      setMarkWonOpen(true);
+                    }}
+                    disabled={!effectiveDealEmail(state.contact, state.deal)}
+                    title={
+                      effectiveDealEmail(state.contact, state.deal)
+                        ? undefined
+                        : "Add a contact email to send a payment link"
+                    }
+                    className="btn-primary w-full"
+                  >
+                    {Icons.send}
+                    Mark won
+                  </button>
+                  {effectiveDealEmail(state.contact, state.deal) ? (
+                    <p className="mt-2.5 text-center text-[11px] leading-relaxed text-white/35">
+                      Emails{" "}
+                      <span className="text-white/60">
+                        {effectiveDealEmail(state.contact, state.deal)}
+                      </span>{" "}
+                      a Stripe payment link from Operion, then closes the deal.
+                    </p>
+                  ) : (
+                    <p className="mt-2.5 text-center text-[11px] leading-relaxed text-amber-300/70">
+                      Add a contact email to send a payment link.
+                    </p>
+                  )}
+                </div>
+              ) : null}
 
               {/* Contact — live contact row when linked, else the deal's snapshot */}
               <div className="glass mt-3 rounded-2xl p-4">
@@ -1170,6 +1253,117 @@ function DealDetailDrawer({
           )}
         </div>
       </aside>
+
+      {/* Mark Won confirmation — explains the payment-link handoff before closing */}
+      {markWonOpen && state.status === "ready" ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
+          <button
+            type="button"
+            aria-label="Close dialog"
+            onClick={() => {
+              if (!markWonBusy) {
+                setMarkWonOpen(false);
+                setMarkWonError(null);
+              }
+            }}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          />
+          <div className="rise-in glass ring-gradient grain relative w-full max-w-md rounded-3xl p-6 sm:p-7">
+            <div className="sheen-overlay" aria-hidden="true" />
+            <div className="mb-5">
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-accent-light">
+                Close deal
+              </p>
+              <h3 className="mt-1 text-2xl font-semibold tracking-[-0.045em] text-gradient-violet">
+                Mark won & send payment link?
+              </h3>
+            </div>
+            <p className="text-[13px] leading-relaxed text-muted">
+              Send{" "}
+              <span className="font-medium text-fg">
+                {state.deal.contact_name || state.deal.company}
+              </span>{" "}
+              a payment link from Operion and close this deal? This emails the customer a
+              Stripe payment link — the deal moves to Closed Won only after Operion accepts.
+            </p>
+
+            {/* Operion subscription — computed from the plan */}
+            <div className="glass mt-4 rounded-2xl p-4">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
+                  Operion subscription
+                </p>
+                <PlanBadge plan={state.deal.plan} />
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-3">
+                <div>
+                  <p className="text-[10px] text-white/30">MRR</p>
+                  <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
+                    {formatUSD(state.deal.mrr)}
+                    <span className="text-[11px] font-medium text-white/50">/mo</span>
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-white/30">Annual</p>
+                  <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
+                    {formatUSD(state.deal.annual)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-white/30">First year</p>
+                  <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-gradient-violet">
+                    {formatUSD(state.deal.firstYear)}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {markWonError ? (
+              <p
+                role="alert"
+                className="mt-4 rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-[13px] leading-relaxed text-red-300"
+              >
+                {markWonError}
+              </p>
+            ) : null}
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setMarkWonOpen(false);
+                  setMarkWonError(null);
+                }}
+                disabled={markWonBusy}
+                className="btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleMarkWon}
+                disabled={markWonBusy}
+                className="btn-primary min-w-36"
+              >
+                {markWonBusy ? (
+                  <>
+                    <span
+                      aria-hidden="true"
+                      className="h-4 w-4 animate-spin rounded-full border-2 border-black/20 border-t-black"
+                    />
+                    Sending…
+                  </>
+                ) : (
+                  <>
+                    {Icons.check}
+                    Send & close
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

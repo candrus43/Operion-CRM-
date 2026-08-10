@@ -210,6 +210,40 @@ async function fetchOwnedDeal(
   return rows.length > 0 ? (rows[0] as Record<string, unknown>) : null;
 }
 
+/**
+ * Runs a dynamic SQL string (with positional `$1..$n` placeholders) through the
+ * Neon driver's tagged-template path — the only call form that works in every
+ * runtime. `db.query()` throws `ReferenceError: require is not defined` under
+ * Vite's dev SSR module loader, so dynamic scoped/filter queries must go
+ * through this instead.
+ *
+ * The SQL string is split at each `$n` marker so the driver re-inserts the bind
+ * markers at exactly the same spots and pairs them with the values in order —
+ * the resulting query text is identical to the original, and the values stay
+ * parameterized (never `db.unsafe()`).
+ */
+async function runDynamicQuery(
+  db: ReturnType<typeof sql>,
+  sqlText: string,
+  args: unknown[],
+): Promise<Record<string, unknown>[]> {
+  const parts: string[] = [];
+  let rest = sqlText;
+  for (let i = 1; i <= args.length; i++) {
+    const marker = "$" + i;
+    const idx = rest.indexOf(marker);
+    if (idx < 0) {
+      throw new Error(`[operion-crm] runDynamicQuery: missing bind marker ${marker}`);
+    }
+    parts.push(rest.slice(0, idx));
+    rest = rest.slice(idx + marker.length);
+  }
+  parts.push(rest);
+  const template = Object.assign(parts, { raw: parts }) as unknown as TemplateStringsArray;
+  const rows = await db(template, ...args);
+  return rows as Record<string, unknown>[];
+}
+
 /* ------------------------------------------------------------------ */
 /* Server functions                                                    */
 /* ------------------------------------------------------------------ */
@@ -261,7 +295,7 @@ export const listDeals = createServerFn({ method: "POST" })
       if (!user) return { ok: false, reason: "not-signed-in" };
       const db = sql();
       const q = scopedWithFilters(user, data ?? { agentId: null, stage: null, plan: null, minMrr: null, maxMrr: null });
-      const rows = await db.query(q.sql, q.args);
+      const rows = await runDynamicQuery(db, q.sql, q.args);
       return { ok: true, deals: rows.map((r) => coerceDeal(r as Record<string, unknown>)) };
     } catch (err) {
       console.error("[operion-crm] listDeals failed:", err);
@@ -411,7 +445,8 @@ export const updateDeal = createServerFn({ method: "POST" })
 
       sets.push(`updated_at = ${args.length + 1}`);
       args.push(new Date());
-      await db.query(
+      await runDynamicQuery(
+        db,
         `update deals set ${sets.join(", ")} where id = ${args.length + 1}`,
         [...args, data.dealId],
       );
@@ -442,5 +477,161 @@ export const moveDealStage = createServerFn({ method: "POST" })
     } catch (err) {
       console.error("[operion-crm] moveDealStage failed:", err);
       return { ok: false, reason: "db-error" };
+    }
+  });
+
+/* ------------------------------------------------------------------ */
+/* Operion payment-link handoff (Mark Won)                             */
+/* ------------------------------------------------------------------ */
+
+/** Operion's CRM handoff endpoint — emails the customer a Stripe payment link. */
+const OPERION_PAYMENT_LINK_URL = "https://operion.ctonew.app/api/crm/send-payment-link";
+
+export type MarkWonResult =
+  | { ok: true; deal: Deal }
+  | {
+      ok: false;
+      reason: DbStatus | "operion-error" | "not-negotiation" | "no-email";
+      message: string;
+    };
+
+/**
+ * Mark a Negotiation deal Won via Operion's payment-link handoff.
+ *
+ * The CRM never handles payment — Operion emails the customer a Stripe payment
+ * link and owns the money. The deal only moves to Closed Won when Operion
+ * ACCEPTS the request (2xx). Anything else (network failure, non-2xx, a
+ * redirect to Operion's login wall) leaves the deal in Negotiation and returns
+ * a clear, retryable message. Redirects are treated as FAILURE via
+ * `redirect: "manual"` — a redirect to a login page must never be followed
+ * into a false success.
+ */
+export const markWon = createServerFn({ method: "POST" })
+  .validator((d: { dealId: string }) => d)
+  .handler(async ({ data }): Promise<MarkWonResult> => {
+    if (!process.env.DATABASE_URL) {
+      return { ok: false, reason: "db-not-connected", message: "Database is not connected yet." };
+    }
+    try {
+      const user = await readSession();
+      if (!user) {
+        return {
+          ok: false,
+          reason: "not-signed-in",
+          message: "Your session expired. Please sign in again.",
+        };
+      }
+      const db = sql();
+      const row = await fetchOwnedDeal(db, user, data.dealId);
+      if (!row) {
+        return { ok: false, reason: "forbidden", message: "You don't have permission to do that." };
+      }
+      if (String(row.stage) !== "Negotiation") {
+        return {
+          ok: false,
+          reason: "not-negotiation",
+          message: "Only deals in Negotiation can be marked won.",
+        };
+      }
+
+      const plan = isPlan(row.plan) ? row.plan : "Founder";
+      const customerName = (
+        row.contact_name == null ? String(row.company) : String(row.contact_name)
+      ).trim();
+
+      // Prefer the linked contact's live email, else the deal's snapshot —
+      // mirrors what the deal drawer shows as the customer email.
+      let customerEmail: string | null =
+        row.contact_email == null ? null : String(row.contact_email).trim();
+      if (row.contact_id != null) {
+        const cRows = await db`select email from contacts where id = ${row.contact_id} limit 1`;
+        if (cRows.length > 0 && cRows[0].email != null) {
+          customerEmail = String(cRows[0].email).trim();
+        }
+      }
+      if (!customerEmail) {
+        return {
+          ok: false,
+          reason: "no-email",
+          message: "This deal has no customer email — add a contact email before closing.",
+        };
+      }
+
+      const apiKey = process.env.OPERION_API_KEY;
+      if (!apiKey) {
+        console.error("[operion-crm] markWon: OPERION_API_KEY is not configured");
+        return {
+          ok: false,
+          reason: "operion-error",
+          message: "The payment link service is not configured — contact the owner.",
+        };
+      }
+
+      // POST the handoff. `redirect: "manual"` makes a redirect (e.g. to
+      // Operion's login page) surface as a non-2xx failure, never a success.
+      let res: Response;
+      try {
+        res = await fetch(OPERION_PAYMENT_LINK_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+          },
+          body: JSON.stringify({ customerEmail, customerName, plan }),
+          redirect: "manual",
+          signal: AbortSignal.timeout(20_000),
+        });
+      } catch (err) {
+        console.error("[operion-crm] markWon: payment-link request failed:", err);
+        return {
+          ok: false,
+          reason: "operion-error",
+          message:
+            "Operion could not be reached — the payment link was not sent. Try again.",
+        };
+      }
+
+      if (res.type === "opaqueredirect" || res.status === 0) {
+        console.error("[operion-crm] markWon: Operion redirected (auth wall) — treated as failure");
+        return {
+          ok: false,
+          reason: "operion-error",
+          message: "Operion could not send the payment link (redirected — try again).",
+        };
+      }
+      if (res.status < 200 || res.status >= 300) {
+        console.error(`[operion-crm] markWon: Operion returned HTTP ${res.status}`);
+        return {
+          ok: false,
+          reason: "operion-error",
+          message: `Operion could not send the payment link (${res.status} — try again).`,
+        };
+      }
+
+      // Operion accepted — the payment link email is on its way. Close the deal.
+      await db`
+        update deals
+        set stage = 'Closed Won', last_activity_at = now(), updated_at = now()
+        where id = ${data.dealId}
+      `;
+      try {
+        await db`
+          insert into activities (deal_id, type, summary, author_id)
+          values (${data.dealId}, 'stage', ${`Closed Won — payment link sent to ${customerEmail}`}, ${user.id})
+        `;
+      } catch (err) {
+        // Non-fatal: the close itself already succeeded.
+        console.error("[operion-crm] markWon: activity insert failed (non-fatal):", err);
+      }
+      const dealRows = await db`
+        select d.*, u.name as owner_name
+        from deals d left join users u on u.id = d.owner_id
+        where d.id = ${data.dealId}
+        limit 1
+      `;
+      return { ok: true, deal: coerceDeal(dealRows[0] as Record<string, unknown>) };
+    } catch (err) {
+      console.error("[operion-crm] markWon failed:", err);
+      return { ok: false, reason: "db-error", message: "Something went wrong. Please try again." };
     }
   });
