@@ -82,7 +82,7 @@ export default function LoginPage() {
             {/* Wordmark */}
             <div className="mb-8 flex items-center gap-3">
               <div className="icon-tile relative shrink-0 overflow-hidden">
-                <img src="/logo.png" alt="" className="h-7 w-7 object-contain" />
+                <img src="/logo.png?v=2" alt="" className="h-7 w-7 object-contain" />
               </div>
               <div>
                 <p className="text-[15px] font-medium tracking-[-0.02em] text-fg">

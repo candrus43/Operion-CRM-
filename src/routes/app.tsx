@@ -443,7 +443,7 @@ function SidebarContent({
         className="flex items-center gap-2.5 px-5 pt-6 pb-5"
       >
         <img
-          src="/logo.png"
+          src="/logo.png?v=2"
           alt="Operion"
           className="h-7 w-7 object-contain transition-transform duration-700 group-hover:scale-110"
         />
@@ -524,7 +524,7 @@ function AppShell() {
       {/* Mobile top bar */}
       <header className="glass-deep sticky top-0 z-30 flex h-16 items-center justify-between border-x-0 border-t-0 px-4 md:hidden">
         <Link to="/app" className="flex items-center gap-2.5">
-          <img src="/logo.png" alt="" className="h-7 w-7 object-contain" />
+          <img src="/logo.png?v=2" alt="" className="h-7 w-7 object-contain" />
           <span className="text-[15px] font-medium tracking-[-0.02em] text-fg">
             Operion <span className="text-muted">CRM</span>
           </span>

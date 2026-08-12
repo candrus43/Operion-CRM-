@@ -60,7 +60,7 @@ export default function InstallBanner() {
         className="glass flex w-full max-w-sm items-center gap-3 rounded-2xl p-3 pr-2 shadow-[0_24px_70px_-28px_rgba(124,58,237,0.5)]"
       >
         <div className="icon-tile-sm shrink-0 overflow-hidden">
-          <img src="/icons/icon-192.png" alt="" className="h-7 w-7 object-contain" />
+          <img src="/icons/icon-192.png?v=2" alt="" className="h-7 w-7 object-contain" />
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-medium text-fg">Install Operion CRM</p>
