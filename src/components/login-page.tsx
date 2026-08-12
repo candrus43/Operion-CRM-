@@ -1,28 +1,58 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useRouter } from "@tanstack/react-router";
 import { login } from "~/lib/auth";
 
 /**
  * Operion-styled sign-in card. Rendered at both "/" and "/login".
  * Renders fine with no database connected — the server function returns a
  * clean "database not connected" error instead of crashing.
+ *
+ * Sign-in speed: the login POST sets the session cookie before its response
+ * resolves (same-origin, so the browser applies Set-Cookie immediately), so
+ * the /app route guard sees the session with no client/server race and we
+ * navigate client-side instead of reloading the whole app shell. While the
+ * user types, the /app route chunks are prefetched; after a successful login
+ * a brief on-brand "Preparing your workspace…" state covers the route swap
+ * (and any cold-start wait) so nothing ever shows a blank screen.
  */
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const router = useRouter();
+  const preloadStarted = useRef(false);
+
+  // Prefetch the /app route chunks (shell + pipeline board) as soon as both
+  // fields are filled, so the heavy modules are cached by the time Enter is
+  // hit. Non-blocking and fire-and-forget — a failure just means the chunks
+  // load during the post-login transition instead.
+  useEffect(() => {
+    if (preloadStarted.current) return;
+    if (!email.trim() || !password) return;
+    preloadStarted.current = true;
+    void router.preloadRoute({ to: "/app" }).catch(() => {});
+  }, [email, password, router]);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (submitting) return;
+    if (submitting || preparing) return;
     setError(null);
     setSubmitting(true);
     try {
       const result = await login({ data: { email, password } });
       if (result.ok) {
-        // Full navigation so the app shell is server-rendered with the new
-        // session cookie — no client/server session race.
-        window.location.assign("/app");
+        // Session cookie is already set (see header comment) — swap to the
+        // workspace without a full document load. Wait one frame so the
+        // "Preparing your workspace…" state paints before the route changes.
+        setPreparing(true);
+        requestAnimationFrame(() => {
+          void router.navigate({ to: "/app" }).catch(() => {
+            setPreparing(false);
+            setError("Something went wrong while opening your workspace. Please try again.");
+          });
+        });
       } else {
         setError(result.error);
       }
@@ -138,6 +168,41 @@ export default function LoginPage() {
           </div>
         </div>
       </div>
+
+      {/* Full-screen "Preparing your workspace…" — appears instantly after a
+          successful login (no blank flash), covers the client-side route swap
+          + /app session check, and unmounts with this page when the workspace
+          shell mounts. Sits OUTSIDE the rise-in wrapper so `fixed` anchors to
+          the viewport. */}
+      {preparing ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink"
+        >
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+            <div className="aurora-a absolute -left-[15%] top-[-18%] h-[46rem] w-[46rem] rounded-full bg-violet-600/[0.16] blur-[80px] md:blur-[150px]" />
+            <div className="aurora-b absolute -right-[12%] top-[6%] h-[38rem] w-[38rem] rounded-full bg-indigo-500/[0.13] blur-[70px] md:blur-[140px]" />
+            <div className="aurora-c absolute bottom-[-22%] left-[28%] h-[34rem] w-[34rem] rounded-full bg-sky-500/[0.09] blur-[60px] md:blur-[130px]" />
+            <div className="absolute inset-0 grid-fade" />
+          </div>
+          <div className="rise-in glass ring-gradient grain relative rounded-3xl p-8 sm:p-10">
+            <div className="sheen-overlay" aria-hidden="true" />
+            <div className="flex flex-col items-center gap-4 text-center">
+              <span
+                aria-hidden="true"
+                className="h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-white"
+              />
+              <div>
+                <p className="text-[15px] font-semibold tracking-[-0.02em] text-fg">
+                  Preparing your workspace…
+                </p>
+                <p className="mt-1 text-[12px] text-muted">Loading your pipeline.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
