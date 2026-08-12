@@ -41,6 +41,14 @@ for (let attempt = 1; ; attempt++) {
       hostname: HOST,
       async fetch(req) {
         const { pathname } = new URL(req.url);
+        // External inbound API (Operion Lead OS → CRM). TanStack Start 1.168
+        // removed API file routes, so this raw HTTP handler is wired into both
+        // servers — here against the built app, and as a Vite middleware in
+        // vite.config.ts for dev. Same contract both places.
+        if (pathname === "/api/crm/leads" && req.method === "POST") {
+          const { handleLeadIngest } = await import("./src/lib/lead-ingest.ts");
+          return handleLeadIngest(req);
+        }
         if (pathname !== "/") {
           const file = Bun.file(CLIENT_DIR + pathname);
           if (await file.exists()) return new Response(file);
