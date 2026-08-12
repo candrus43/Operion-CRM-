@@ -19,10 +19,12 @@ import { sql } from "~/db";
 
 export type { Role, SessionUser } from "./auth-core";
 import {
+  changePasswordCore,
   ensureSchemaFull,
   loginCore,
   logoutCore,
   readSession,
+  type ChangePasswordReason,
   type SessionUser,
 } from "./auth-core";
 
@@ -64,6 +66,32 @@ export const logout = createServerFn({ method: "POST" }).handler(async () => {
   deleteCookie("operion_crm_session", { path: "/" });
   return { ok: true };
 });
+
+export type ChangePasswordResult =
+  | { ok: true }
+  | { ok: false; reason: ChangePasswordReason; message: string };
+
+/**
+ * Self-service password change for the signed-in user (owner or agent).
+ * Requires an active session; verifies the current password, enforces an 8-char
+ * minimum on the new password, updates ONLY the session user's row, and revokes
+ * their OTHER sessions (the current one stays alive). Password values are never
+ * logged — the core never echoes them and the catch below logs only the error.
+ */
+export const changePassword = createServerFn({ method: "POST" })
+  .validator((d: { currentPassword: string; newPassword: string }) => d)
+  .handler(async ({ data }): Promise<ChangePasswordResult> => {
+    try {
+      return await changePasswordCore(data.currentPassword, data.newPassword);
+    } catch (err) {
+      console.error("[operion-crm] changePassword failed:", err);
+      return {
+        ok: false,
+        reason: "db-error",
+        message: "Something went wrong while changing your password. Please try again.",
+      };
+    }
+  });
 
 /** Current user or null. Safe to call with no database connected (returns null). */
 export const getSession = createServerFn({ method: "GET" }).handler(

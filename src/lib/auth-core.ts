@@ -437,3 +437,97 @@ export async function logoutCore(): Promise<void> {
     }
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Change password core                                                */
+/* ------------------------------------------------------------------ */
+
+export type ChangePasswordReason =
+  | "db-not-connected"
+  | "not-signed-in"
+  | "current-password-incorrect"
+  | "new-password-too-short"
+  | "db-error";
+
+export type ChangePasswordCoreResult =
+  | { ok: true }
+  | { ok: false; reason: ChangePasswordReason; message: string }
+
+/**
+ * Self-service password change for the signed-in user (owner or agent — anyone
+ * with an active session). Verifies the current password against the stored
+ * scrypt hash (timing-safe `verifyPassword`), enforces an 8-char minimum on the
+ * new password, updates ONLY the session user's row, then revokes every OTHER
+ * session for that user so a leaked session dies on password change — the
+ * current session stays alive. Password values are never logged.
+ */
+export async function changePasswordCore(
+  currentPassword: string,
+  newPassword: string,
+): Promise<ChangePasswordCoreResult> {
+  if (!process.env.DATABASE_URL) {
+    return {
+      ok: false,
+      reason: "db-not-connected",
+      message: "Database is not connected yet. Please try again shortly.",
+    };
+  }
+  const session = await readSession();
+  if (!session) {
+    return {
+      ok: false,
+      reason: "not-signed-in",
+      message: "Your session expired. Please sign in again.",
+    };
+  }
+  const current = currentPassword ?? "";
+  const next = newPassword ?? "";
+  if (!current) {
+    return {
+      ok: false,
+      reason: "current-password-incorrect",
+      message: "Current password is incorrect.",
+    };
+  }
+  if (next.length < 8) {
+    return {
+      ok: false,
+      reason: "new-password-too-short",
+      message: "New password must be at least 8 characters.",
+    };
+  }
+
+  const db = sql();
+  const rows = await db`
+    select password_hash from users where id = ${session.id} limit 1
+  `;
+  if (rows.length === 0) {
+    // Session user vanished (shouldn't happen — sessions cascade on delete).
+    return { ok: false, reason: "not-signed-in", message: "Your session expired. Please sign in again." };
+  }
+  if (!verifyPassword(current, String(rows[0].password_hash))) {
+    return {
+      ok: false,
+      reason: "current-password-incorrect",
+      message: "Current password is incorrect.",
+    };
+  }
+
+  // Update the hash first, then revoke the user's OTHER sessions. The current
+  // session is kept alive by excluding its token hash.
+  await db`update users set password_hash = ${hashPassword(next)} where id = ${session.id}`;
+  const currentToken = getCookie(SESSION_COOKIE);
+  const currentTokenHash = currentToken ? hashToken(currentToken) : null;
+  if (currentTokenHash) {
+    try {
+      await db`
+        delete from sessions
+        where user_id = ${session.id} and token_hash != ${currentTokenHash}
+      `;
+    } catch (err) {
+      // Non-fatal hygiene step — the password itself is already updated.
+      console.error("[operion-crm] changePassword: session revoke failed (non-fatal):", err);
+    }
+  }
+  return { ok: true };
+}
