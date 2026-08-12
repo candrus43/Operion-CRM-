@@ -7,6 +7,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { getSession, logout, type SessionUser } from "~/lib/auth";
+import InstallBanner from "~/components/install-banner";
 
 export const Route = createFileRoute("/app")({
   loader: async () => {
@@ -299,6 +300,9 @@ function AppShell() {
           <Outlet />
         </main>
       </div>
+
+      {/* PWA install prompt — only appears when beforeinstallprompt fires */}
+      <InstallBanner />
     </div>
   );
 }

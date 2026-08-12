@@ -17,10 +17,31 @@ export const Route = createRootRoute({
         name: "description",
         content: "Operion CRM — the internal sales workspace for the team.",
       },
+      // PWA — installable-app metadata (colors match --color-ink #08080a)
+      { name: "theme-color", content: "#08080a" },
+      { name: "mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-status-bar-style", content: "black" },
+      { name: "apple-mobile-web-app-title", content: "Operion" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
       { rel: "icon", href: "/favicon.ico" },
+      // PWA manifest + icons
+      { rel: "manifest", href: "/manifest.webmanifest" },
+      { rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
+      {
+        rel: "icon",
+        type: "image/png",
+        sizes: "192x192",
+        href: "/icons/icon-192.png",
+      },
+      {
+        rel: "icon",
+        type: "image/png",
+        sizes: "512x512",
+        href: "/icons/icon-512.png",
+      },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       {
         rel: "preconnect",
@@ -32,6 +53,7 @@ export const Route = createRootRoute({
         href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap",
       },
     ],
+    scripts: [{ src: "/pwa-register.js", type: "module" }],
   }),
   notFoundComponent: () => <div>Page not found</div>,
   component: RootComponent,
