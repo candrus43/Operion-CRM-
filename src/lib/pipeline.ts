@@ -781,6 +781,100 @@ export const unmarkSetupFeeCollected = createServerFn({ method: "POST" })
     }
   });
 
+/* ------------------------------------------------------------------ */
+/* Manual activity logging (call / email / meeting / note)             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Types a USER may log manually. System-generated entries use other types
+ * (`stage` from markWon; `note` from reassignDeal) — those are read-only and
+ * never selectable here, but the timeline renders them via ACTIVITY_META.
+ */
+export const ACTIVITY_TYPES = ["call", "email", "meeting", "note"] as const;
+export type ActivityType = (typeof ACTIVITY_TYPES)[number];
+
+const ACTIVITY_TYPE_SET = new Set<string>(ACTIVITY_TYPES);
+/** Matches the text column — summaries longer than this are rejected. */
+const ACTIVITY_SUMMARY_MAX = 1000;
+
+export type CreateActivityResult =
+  | { ok: true; activity: Activity }
+  | { ok: false; reason: DbStatus; message: string };
+
+/**
+ * Log a manual activity against a deal. Agents may only log on deals assigned
+ * to them; the owner on any deal (same guard as every other deal mutation —
+ * `fetchOwnedDeal`). Validates the type against the user-entered vocabulary and
+ * the summary (trimmed, non-empty, ≤ 1000 chars), inserts with the current user
+ * as author, bumps the deal's `last_activity_at` so the board chip stays
+ * honest, and returns the new activity shaped exactly like `Activity` (author
+ * name joined).
+ */
+export const createActivity = createServerFn({ method: "POST" })
+  .validator((d: { dealId: string; type: string; summary: string }) => d)
+  .handler(async ({ data }): Promise<CreateActivityResult> => {
+    if (!process.env.DATABASE_URL) {
+      return { ok: false, reason: "db-not-connected", message: "Database is not connected yet." };
+    }
+    try {
+      const user = await readSession();
+      if (!user) {
+        return {
+          ok: false,
+          reason: "not-signed-in",
+          message: "Your session expired. Please sign in again.",
+        };
+      }
+      const type = (data.type ?? "").trim() as ActivityType;
+      if (!ACTIVITY_TYPE_SET.has(type)) {
+        return { ok: false, reason: "invalid", message: "Choose a valid activity type." };
+      }
+      const summary = (data.summary ?? "").trim();
+      if (!summary) {
+        return { ok: false, reason: "invalid", message: "Add a short summary for this activity." };
+      }
+      if (summary.length > ACTIVITY_SUMMARY_MAX) {
+        return {
+          ok: false,
+          reason: "invalid",
+          message: `Keep the summary under ${ACTIVITY_SUMMARY_MAX.toLocaleString()} characters.`,
+        };
+      }
+      const db = sql();
+      const owned = await fetchOwnedDeal(db, user, data.dealId);
+      if (!owned) {
+        return { ok: false, reason: "forbidden", message: "You don't have permission to do that." };
+      }
+
+      const rows = await db`
+        insert into activities (deal_id, type, summary, author_id)
+        values (${data.dealId}, ${type}, ${summary}, ${user.id})
+        returning id, deal_id, type, summary, created_at
+      `;
+      // Keep the board's "last activity" chip in sync with the timeline.
+      await db`
+        update deals
+        set last_activity_at = now(), updated_at = now()
+        where id = ${data.dealId}
+      `;
+      const a = rows[0];
+      return {
+        ok: true,
+        activity: {
+          id: String(a.id),
+          deal_id: String(a.deal_id),
+          type: String(a.type),
+          summary: a.summary == null ? null : String(a.summary),
+          author_name: user.name,
+          created_at: new Date(a.created_at as Date).toISOString(),
+        },
+      };
+    } catch (err) {
+      console.error("[operion-crm] createActivity failed:", err);
+      return { ok: false, reason: "db-error", message: "Something went wrong. Please try again." };
+    }
+  });
+
 /** One commission ledger row (Closed Won deals only). */
 export interface CommissionRow {
   dealId: string;

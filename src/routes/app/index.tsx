@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, createFileRoute, useLoaderData } from "@tanstack/react-router";
 import type { SessionUser } from "~/lib/auth";
 import {
+  ACTIVITY_TYPES,
   STAGES,
+  createActivity,
   createDeal,
   getDealDetail,
   listDeals,
@@ -13,6 +15,7 @@ import {
   unmarkSetupFeeCollected,
   updateDeal,
   type Activity,
+  type ActivityType,
   type Deal,
   type DbStatus,
   type DealInput,
@@ -915,6 +918,11 @@ function DealDetailDrawer({
   const [stageMoveBusy, setStageMoveBusy] = useState(false);
   const [assignBusy, setAssignBusy] = useState(false);
   const [assignError, setAssignError] = useState<string | null>(null);
+  const [actOpen, setActOpen] = useState(false);
+  const [actType, setActType] = useState<ActivityType>("call");
+  const [actSummary, setActSummary] = useState("");
+  const [actBusy, setActBusy] = useState(false);
+  const [actError, setActError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -952,6 +960,45 @@ function DealDetailDrawer({
     setState((s) => (s.status === "ready" ? { ...s, deal: { ...s.deal, notes } } : s));
     notify("Notes saved");
     onChanged();
+  }
+
+  /** Log a manual activity (call / email / meeting / note) and prepend it to the timeline. */
+  async function handleLogActivity() {
+    if (state.status !== "ready" || actBusy) return;
+    const summary = actSummary.trim();
+    if (!summary) {
+      setActError("Add a short summary for this activity.");
+      return;
+    }
+    setActBusy(true);
+    setActError(null);
+    try {
+      const res = await createActivity({ data: { dealId, type: actType, summary } });
+      if (!res.ok) {
+        if (res.reason === "not-signed-in") window.location.assign("/");
+        else setActError(res.message);
+        return;
+      }
+      // Prepend so the timeline updates without a page reload; keep the deal's
+      // last_activity_at in sync too (the server bumps it).
+      setState((s) =>
+        s.status === "ready"
+          ? {
+              ...s,
+              activities: [res.activity, ...s.activities],
+              deal: { ...s.deal, last_activity_at: res.activity.created_at },
+            }
+          : s,
+      );
+      setActSummary("");
+      setActError(null);
+      notify("Activity logged");
+      onChanged();
+    } catch {
+      setActError("Something went wrong. Please try again.");
+    } finally {
+      setActBusy(false);
+    }
   }
 
   /** Mark Won — confirmed in a dialog, then POSTs the payment-link handoff to Operion. */
@@ -1440,15 +1487,95 @@ function DealDetailDrawer({
                 <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/35">
                   Activity
                 </p>
-                <button
-                  type="button"
-                  onClick={() => onEdit(state.deal)}
-                  className="btn-ghost h-8 px-3 text-[12px]"
-                >
-                  <span className="text-white/40">{Icons.edit}</span>
-                  Edit deal
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActOpen((v) => !v);
+                      setActError(null);
+                    }}
+                    className="btn-ghost h-8 px-3 text-[12px]"
+                  >
+                    <span className="text-white/40">{Icons.plus}</span>
+                    {actOpen ? "Cancel" : "Log activity"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onEdit(state.deal)}
+                    className="btn-ghost h-8 px-3 text-[12px]"
+                  >
+                    <span className="text-white/40">{Icons.edit}</span>
+                    Edit deal
+                  </button>
+                </div>
               </div>
+
+              {/* Add activity — collapsed by default, expands into a compact form */}
+              {actOpen ? (
+                <div className="glass mt-3 rounded-2xl p-4">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <label className="flex flex-col gap-1.5 sm:w-40 sm:shrink-0">
+                      <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-white/30">
+                        Type
+                      </span>
+                      <select
+                        value={actType}
+                        onChange={(e) => setActType(e.target.value as ActivityType)}
+                        className="select-dark select-dark-sm w-full"
+                      >
+                        {ACTIVITY_TYPES.map((t) => (
+                          <option key={t} value={t}>
+                            {ACTIVITY_META[t]?.label ?? t}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-white/30">
+                        Summary
+                      </span>
+                      <textarea
+                        rows={2}
+                        value={actSummary}
+                        onChange={(e) => setActSummary(e.target.value)}
+                        placeholder="What happened on this call / email…"
+                        className="input-dark resize-none"
+                      />
+                    </label>
+                  </div>
+                  <div className="mt-3 flex items-center justify-end gap-3">
+                    <span className="text-[11px] text-white/25">
+                      {actSummary.length > 0 ? `${actSummary.length}/1000` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleLogActivity}
+                      disabled={actBusy}
+                      className="btn-primary h-8 px-3 text-[12px]"
+                    >
+                      {actBusy ? (
+                        <>
+                          <span
+                            aria-hidden="true"
+                            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-black/20 border-t-black"
+                          />
+                          Logging…
+                        </>
+                      ) : (
+                        "Log activity"
+                      )}
+                    </button>
+                  </div>
+                  {actError ? (
+                    <p
+                      role="alert"
+                      className="mt-3 rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-[13px] leading-relaxed text-red-300"
+                    >
+                      {actError}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
 
               <div className="mt-3 space-y-2.5 pb-4">
                 {state.activities.length === 0 ? (
