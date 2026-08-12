@@ -25,6 +25,8 @@ import {
 } from "~/lib/pipeline";
 import { listContacts, type Contact } from "~/lib/contacts";
 import { reassignDeal } from "~/lib/agents";
+import { isDealStale } from "~/lib/briefing";
+import { MorningBriefing } from "~/components/morning-briefing";
 import {
   PLANS,
   PLAN_PRICING,
@@ -260,6 +262,9 @@ function DealCard({
 }) {
   const won = deal.stage === "Closed Won";
   const lost = deal.stage === "Closed Lost";
+  // Stale = open deal with no activity for STALE_DEAL_DAYS (7) — effective
+  // last touch falls back to created_at. Closed deals never wear the badge.
+  const stale = isDealStale(deal);
   return (
     <div
       draggable
@@ -278,13 +283,24 @@ function DealCard({
         dragging ? "opacity-40" : ""
       } ${won ? "border-emerald-400/25 bg-emerald-500/[0.05]" : ""} ${
         lost ? "border-rose-400/25 bg-rose-500/[0.05]" : ""
-      }`}
+      } ${stale ? "border-amber-400/30" : ""}`}
     >
       <div className="flex items-start justify-between gap-2">
         <p className="truncate text-[14px] font-semibold tracking-[-0.045em] text-fg">
           {deal.company}
         </p>
-        <PlanBadge plan={deal.plan} className="shrink-0" />
+        <span className="flex shrink-0 items-center gap-1.5">
+          {stale ? (
+            <span
+              title="No activity for 7+ days"
+              className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-amber-300 uppercase ring-1 ring-inset ring-amber-400/25"
+            >
+              <span aria-hidden="true" className="h-1 w-1 rounded-full bg-amber-400" />
+              Stale
+            </span>
+          ) : null}
+          <PlanBadge plan={deal.plan} />
+        </span>
       </div>
       <div className="mt-1 flex items-baseline gap-1.5">
         <span className="text-[13px] font-semibold tabular-nums text-white/90">
@@ -2059,6 +2075,7 @@ function PipelinePage() {
           </div>
 
           {/* Filters */}
+          <MorningBriefing />
           <FilterBar
             filters={filters}
             onFilterChange={(patch) => setFilters((f) => ({ ...f, ...patch }))}

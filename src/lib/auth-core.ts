@@ -84,7 +84,7 @@ function cookieOptions(expires: Date | null): Record<string, unknown> {
  * Existing databases are upgraded exactly once: the first run that sees a
  * stale/missing marker runs the full ensure and then writes the new version.
  */
-export const SCHEMA_VERSION = "3";
+export const SCHEMA_VERSION = "4";
 
 export const SCHEMA_SQL = `
   -- Schema version marker row (key = 'schema_version'). schemaIsCurrent reads
@@ -214,6 +214,21 @@ export const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
   CREATE INDEX IF NOT EXISTS idx_activities_deal_id ON activities (deal_id);
+
+  -- AI morning briefing - one generated summary per user per day, cached here
+  -- so OpenAI is called at most once per user per day (see src/lib/briefing.ts).
+  -- ai_generated is false when the summary fell back to the static DB-only
+  -- rundown (missing key or API failure) - the UI shows an "AI unavailable"
+  -- note in that case. UNIQUE (user_id, briefing_date) enforces the daily cap.
+  CREATE TABLE IF NOT EXISTS briefings (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    briefing_date date NOT NULL,
+    content text NOT NULL,
+    ai_generated boolean NOT NULL DEFAULT true,
+    generated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (user_id, briefing_date)
+  );
 `;
 
 export async function seedIfNeeded(db: ReturnType<typeof sql>): Promise<void> {
