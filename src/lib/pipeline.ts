@@ -464,13 +464,20 @@ export const updateDeal = createServerFn({ method: "POST" })
       if (data.notes !== undefined) push("notes", data.notes?.trim() || null);
       if (sets.length === 0) return { ok: true };
 
-      sets.push(`updated_at = ${args.length + 1}`);
+      sets.push(`updated_at = $${args.length + 1}`);
       args.push(new Date());
       await runDynamicQuery(
         db,
-        `update deals set ${sets.join(", ")} where id = ${args.length + 1}`,
+        `update deals set ${sets.join(", ")} where id = $${args.length + 1}`,
         [...args, data.dealId],
       );
+      // Editing a deal can also close it — notify Operion when the persisted
+      // stage transitioned into a closed stage (closed → closed is no new close).
+      if (data.stage !== undefined && isClosedStage(data.stage) && !isClosedStage(String(owned.stage))) {
+        await fireDealClosedWebhook({
+          ...dealClosedPayload(data.dealId, data.stage, owned),
+        });
+      }
       return { ok: true };
     } catch (err) {
       console.error("[operion-crm] updateDeal failed:", err);
@@ -502,12 +509,105 @@ export const moveDealStage = createServerFn({ method: "POST" })
             end
         where id = ${data.dealId}
       `;
+      // Notify Operion when the deal TRANSITIONS into a closed stage. A re-move
+      // between two closed stages is not a new close — no duplicate webhook.
+      if (isClosedStage(data.stage) && !isClosedStage(String(owned.stage))) {
+        await fireDealClosedWebhook({
+          ...dealClosedPayload(data.dealId, data.stage, owned),
+        });
+      }
       return { ok: true };
     } catch (err) {
       console.error("[operion-crm] moveDealStage failed:", err);
       return { ok: false, reason: "db-error" };
     }
   });
+
+/* ------------------------------------------------------------------ */
+/* Operion deal-closed webhook                                         */
+/* ------------------------------------------------------------------ */
+
+/** True when `s` is one of the two closed stages (also a type guard). */
+function isClosedStage(s: string): s is "Closed Won" | "Closed Lost" {
+  return s === "Closed Won" || s === "Closed Lost";
+}
+
+interface DealClosedWebhookPayload {
+  dealId: string;
+  stage: "Closed Won" | "Closed Lost";
+  plan: Plan;
+  customerName: string | null;
+  customerEmail: string | null;
+  company: string;
+  closedAt: string;
+}
+
+/**
+ * Builds the deal-closed webhook payload from a persisted deal row. Only
+ * `dealId` is required by Operion; the rest is useful context. `closedAt` is
+ * the close-event timestamp (server now — the close just persisted).
+ */
+function dealClosedPayload(
+  dealId: string,
+  stage: "Closed Won" | "Closed Lost",
+  row: Record<string, unknown>,
+): DealClosedWebhookPayload {
+  return {
+    dealId,
+    stage,
+    plan: isPlan(row.plan) ? row.plan : "Founder",
+    customerName: row.contact_name == null ? null : String(row.contact_name),
+    customerEmail: row.contact_email == null ? null : String(row.contact_email),
+    company: String(row.company),
+    closedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * POSTs a deal-closed notification to Operion after a deal transitions into a
+ * closed stage. NON-BLOCKING by contract: the caller has already persisted the
+ * stage, and any failure here is logged and swallowed — never thrown — so a
+ * slow or down Operion endpoint can never reject the close. Config comes from
+ * env (`OPERION_DEAL_CLOSED_WEBHOOK_URL` / `OPERION_DEAL_CLOSED_WEBHOOK_TOKEN`);
+ * when either is missing this is a no-op (one log line, request unaffected),
+ * mirroring the payment-link handoff's "not configured" guard. Short 8s
+ * timeout so a stalled Operion endpoint can't hold up the request path.
+ */
+async function fireDealClosedWebhook(payload: DealClosedWebhookPayload): Promise<void> {
+  const url = process.env.OPERION_DEAL_CLOSED_WEBHOOK_URL;
+  const token = process.env.OPERION_DEAL_CLOSED_WEBHOOK_TOKEN;
+  if (!url || !token) {
+    console.error(
+      "[operion-crm] deal-closed webhook not configured (OPERION_DEAL_CLOSED_WEBHOOK_URL/TOKEN) — skipping",
+    );
+    return;
+  }
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (res.status < 200 || res.status >= 300) {
+      console.error(
+        `[operion-crm] deal-closed webhook failed: Operion returned HTTP ${res.status} for deal ${payload.dealId}`,
+      );
+      return;
+    }
+    console.log(
+      `[operion-crm] deal-closed webhook sent: deal ${payload.dealId} → ${payload.stage} (HTTP ${res.status})`,
+    );
+  } catch (err) {
+    console.error(
+      `[operion-crm] deal-closed webhook failed for deal ${payload.dealId}:`,
+      err,
+    );
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* Operion payment-link handoff (Mark Won)                             */
@@ -645,6 +745,14 @@ export const markWon = createServerFn({ method: "POST" })
             closed_at = coalesce(closed_at, now())
         where id = ${data.dealId}
       `;
+      // The Mark Won path persists Closed Won itself (not via updateDeal /
+      // moveDealStage), so fire the deal-closed webhook explicitly here. It
+      // always is a transition (the deal was in Negotiation). Non-blocking —
+      // the close already succeeded; a webhook failure is logged, never thrown.
+      await fireDealClosedWebhook({
+        ...dealClosedPayload(data.dealId, "Closed Won", row),
+        customerEmail,
+      });
       try {
         await db`
           insert into activities (deal_id, type, summary, author_id)
