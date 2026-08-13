@@ -15,6 +15,9 @@
  *   Body:    { customerName: string (required),
  *              customerEmail: string (required),
  *              company?: string, phone?: string,
+ *              domain?: string,          (optional: find-or-create company by
+ *                                         normalized domain and link it)
+ *              fields?: object,          (optional: stored on the contact)
  *              plan?: "Founder" | "Studio" (default "Founder"),
  *              source?: string (default "Operion Lead OS") }
  *   200 → { ok: true, dealId, created, duplicate }
@@ -32,16 +35,16 @@
  */
 import { sql } from "~/db";
 import { isPlan, type Plan } from "./pricing";
+import {
+  findOrCreateCompanyByDomain,
+  json,
+  normalizeDomain,
+  normalizeEmail,
+  requireApiKey,
+} from "./crm-api";
 
 /** Default source label stamped into the activity when the body omits `source`. */
 export const LEAD_SOURCE_DEFAULT = "Operion Lead OS";
-
-function json(body: Record<string, unknown>, status: number): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 /**
  * Handles a single POST /api/crm/leads request. Returns a JSON Response with
@@ -49,16 +52,9 @@ function json(body: Record<string, unknown>, status: number): Response {
  */
 export async function handleLeadIngest(req: Request): Promise<Response> {
   // 1. API key auth — the owner pastes this key into Operion's "Send to CRM"
-  // settings. Compare against the env var read at process start.
-  const expected = process.env.CRM_API_KEY;
-  if (!expected) {
-    console.error("[operion-crm] lead-ingest: CRM_API_KEY is not configured");
-    return json({ ok: false, error: "Unauthorized" }, 401);
-  }
-  const supplied = req.headers.get("x-api-key");
-  if (!supplied || supplied !== expected) {
-    return json({ ok: false, error: "Unauthorized" }, 401);
-  }
+  // settings. Shared with the other /api/crm/* endpoints (see crm-api.ts).
+  const auth = requireApiKey(req);
+  if (auth) return auth;
 
   // 2. Parse + validate the body. Everything except customerName/customerEmail
   // is optional; plan defaults to Founder, source defaults to "Operion Lead OS".
@@ -75,9 +71,18 @@ export async function handleLeadIngest(req: Request): Promise<Response> {
   if (!customerName || !customerEmailRaw.trim()) {
     return json({ ok: false, error: "customerName and customerEmail are required" }, 400);
   }
-  const email = customerEmailRaw.trim().toLowerCase();
+  const email = normalizeEmail(customerEmailRaw);
   const company = typeof b.company === "string" && b.company.trim() ? b.company.trim() : null;
   const phone = typeof b.phone === "string" && b.phone.trim() ? b.phone.trim() : null;
+  // Optional Lead OS integration fields (v2): domain dedupes/find-or-creates the
+  // company; fields are stored on the contact (same semantics as the contacts
+  // endpoint).
+  const domain = normalizeDomain(b.domain);
+  const fieldsRaw = b.fields;
+  const fields: Record<string, unknown> | null =
+    fieldsRaw !== undefined && fieldsRaw !== null && typeof fieldsRaw === "object" && !Array.isArray(fieldsRaw)
+      ? (fieldsRaw as Record<string, unknown>)
+      : null;
   let plan: Plan = "Founder";
   if (b.plan !== undefined && b.plan !== null && b.plan !== "") {
     if (!isPlan(b.plan)) {
@@ -95,8 +100,16 @@ export async function handleLeadIngest(req: Request): Promise<Response> {
   try {
     const db = sql();
 
-    // 3a. Reuse the contact by normalized email; backfill company/phone ONLY
-    // when currently empty (null or ''). Create it when no match exists.
+    // 3a. Optional company linkage: find-or-create by normalized domain (same
+    // helper + normalization as /api/crm/contacts).
+    let companyRef: { id: string; name: string | null } | null = null;
+    if (domain) {
+      companyRef = await findOrCreateCompanyByDomain(db, domain);
+    }
+
+    // 3b. Reuse the contact by normalized email; backfill company/phone/company
+    // link/fields ONLY when currently empty (null or ''/'{}'). Create it when no
+    // match exists.
     const contactRows = await db`
       select id from contacts
       where email is not null and lower(email) = ${email}
@@ -107,20 +120,22 @@ export async function handleLeadIngest(req: Request): Promise<Response> {
       contactId = String(contactRows[0].id);
       await db`
         update contacts
-        set company = case when company is null or company = '' then ${company} else company end,
-            phone = case when phone is null or phone = '' then ${phone} else phone end
+        set company = case when company is null or company = '' then ${companyRef?.name ?? company} else company end,
+            phone = case when phone is null or phone = '' then ${phone} else phone end,
+            company_id = case when company_id is null then ${companyRef?.id ?? null} else company_id end,
+            fields = case when fields = '{}'::jsonb then ${fields ?? {}} else fields end
         where id = ${contactId}
       `;
     } else {
       const newContact = await db`
-        insert into contacts (name, company, email, phone)
-        values (${customerName}, ${company}, ${email}, ${phone})
+        insert into contacts (name, company, email, phone, fields, company_id)
+        values (${customerName}, ${companyRef?.name ?? company}, ${email}, ${phone}, ${fields ?? {}}, ${companyRef?.id ?? null})
         returning id
       `;
       contactId = String(newContact[0].id);
     }
 
-    // 3b. Idempotency: one OPEN deal per contact. A closed deal doesn't block a
+    // 3c. Idempotency: one OPEN deal per contact. A closed deal doesn't block a
     // fresh one — the lead is genuinely new.
     const openRows = await db`
       select id from deals
@@ -147,10 +162,12 @@ export async function handleLeadIngest(req: Request): Promise<Response> {
 
     // 3d. Create the deal. deals.company is NOT NULL — when the body omits the
     // company, fall back to the customer name so the board always has a label.
+    // A resolved company's name (via `domain`) wins over the free-text company.
+    const dealLabel = companyRef?.name ?? company ?? customerName;
     const dealRows = await db`
       insert into deals (company, contact_id, contact_name, contact_email, contact_phone, plan, stage, owner_id)
       values (
-        ${company ?? customerName},
+        ${dealLabel},
         ${contactId},
         ${customerName},
         ${email},

@@ -28,33 +28,35 @@ function crmSchemaWarm(): Plugin {
 }
 
 /**
- * External inbound API: POST /api/crm/leads (Operion Lead OS → CRM).
+ * External inbound API: /api/crm/* (Operion Lead OS → CRM).
  *
  * TanStack Start 1.168 has NO API-file-route support (createAPIFileRoute was
- * removed from the framework), so the endpoint is a raw HTTP handler
- * (src/lib/lead-ingest.ts) wired into both servers. This middleware intercepts
- * the path in dev BEFORE Vite's internal middlewares / the SSR handler; the
- * production server (serve.ts) intercepts it the same way against the built
- * app. Middleware added inside configureServer runs before Vite's internal
- * middlewares, so the SSR handler never sees these requests.
+ * removed from the framework), so the endpoints are raw HTTP handlers
+ * (src/lib/crm-api.ts — companies/contacts/notes/lookup — plus the original
+ * /api/crm/leads in src/lib/lead-ingest.ts) wired into both servers. This
+ * middleware intercepts the paths in dev BEFORE Vite's internal middlewares /
+ * the SSR handler; the production server (serve.ts) intercepts them the same
+ * way against the built app. Middleware added inside configureServer runs
+ * before Vite's internal middlewares, so the SSR handler never sees these
+ * requests.
  */
-function crmLeadIngest(): Plugin {
+function crmInboundApi(): Plugin {
   let handler: ((req: Request) => Promise<Response>) | null = null;
   return {
-    name: "operion-crm-lead-ingest",
+    name: "operion-crm-inbound-api",
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
-        if (req.method !== "POST") return next();
         const url = new URL(req.url ?? "/", "http://localhost");
-        if (url.pathname !== "/api/crm/leads") return next();
+        if (!url.pathname.startsWith("/api/crm/")) return next();
+        if (req.method !== "POST" && req.method !== "GET") return next();
         try {
           if (!handler) {
-            const mod = (await server.ssrLoadModule("/src/lib/lead-ingest.ts")) as {
-              handleLeadIngest: (r: Request) => Promise<Response>;
+            const mod = (await server.ssrLoadModule("/src/lib/crm-api.ts")) as {
+              handleCrmApi: (r: Request) => Promise<Response>;
             };
-            handler = mod.handleLeadIngest;
+            handler = mod.handleCrmApi;
           }
-          // Node IncomingMessage → web Request (body included).
+          // Node IncomingMessage → web Request (body included; GET has none).
           const chunks: Buffer[] = [];
           for await (const chunk of req) chunks.push(Buffer.from(chunk));
           const headers = new Headers();
@@ -63,16 +65,16 @@ function crmLeadIngest(): Plugin {
             else if (value != null) headers.set(key, value);
           }
           const request = new Request(url, {
-            method: "POST",
+            method: req.method,
             headers,
-            body: Buffer.concat(chunks),
+            body: req.method === "GET" ? undefined : Buffer.concat(chunks),
           });
           const response = await handler(request);
           res.statusCode = response.status;
           response.headers.forEach((value, key) => res.setHeader(key, value));
           res.end(Buffer.from(await response.arrayBuffer()));
         } catch (err) {
-          console.error("[operion-crm] lead-ingest middleware failed:", err);
+          console.error("[operion-crm] inbound-api middleware failed:", err);
           res.statusCode = 500;
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify({ ok: false, error: "Internal server error" }));
@@ -109,7 +111,7 @@ export default defineConfig({
   },
   plugins: [
     crmSchemaWarm(),
-    crmLeadIngest(),
+    crmInboundApi(),
     tailwindcss(),
     tsConfigPaths({
       projects: ["./tsconfig.json"],

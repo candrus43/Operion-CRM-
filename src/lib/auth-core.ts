@@ -84,7 +84,7 @@ function cookieOptions(expires: Date | null): Record<string, unknown> {
  * Existing databases are upgraded exactly once: the first run that sees a
  * stale/missing marker runs the full ensure and then writes the new version.
  */
-export const SCHEMA_VERSION = "4";
+export const SCHEMA_VERSION = "5";
 
 export const SCHEMA_SQL = `
   -- Schema version marker row (key = 'schema_version'). schemaIsCurrent reads
@@ -146,6 +146,28 @@ export const SCHEMA_SQL = `
     author_id uuid REFERENCES users(id) ON DELETE SET NULL,
     created_at timestamptz NOT NULL DEFAULT now()
   );
+
+  -- v5: companies — Lead OS integration. Upserted by normalized domain (see
+  -- src/lib/crm-api.ts) — the fields jsonb holds Fit Score, recommended buyer,
+  -- research summary, provenance and any custom keys (top-level merged on update).
+  CREATE TABLE IF NOT EXISTS companies (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name text,
+    domain text UNIQUE,
+    website text,
+    notes text,
+    fields jsonb NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+
+  -- v5: contacts gain the Lead OS columns — company link (ON DELETE SET NULL —
+  -- the legacy "company" text column stays for migration safety, do NOT drop),
+  -- a fields jsonb (same merge semantics as companies) and updated_at (the
+  -- notes endpoint bumps it). All idempotent so they upgrade existing DBs.
+  ALTER TABLE contacts ADD COLUMN IF NOT EXISTS fields jsonb NOT NULL DEFAULT '{}';
+  ALTER TABLE contacts ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES companies(id) ON DELETE SET NULL;
+  ALTER TABLE contacts ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
   -- One contact can have many deals. Idempotent so it also upgrades databases
   -- created before this column existed. ON DELETE SET NULL keeps the deal row
@@ -214,6 +236,10 @@ export const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
   CREATE INDEX IF NOT EXISTS idx_activities_deal_id ON activities (deal_id);
+  -- v5: Lead OS lookups — contacts by company and by normalized email.
+  -- (companies.domain is already indexed by its UNIQUE constraint.)
+  CREATE INDEX IF NOT EXISTS idx_contacts_company_id ON contacts (company_id);
+  CREATE INDEX IF NOT EXISTS idx_contacts_email_lower ON contacts (lower(email));
 
   -- AI morning briefing - one generated summary per user per day, cached here
   -- so OpenAI is called at most once per user per day (see src/lib/briefing.ts).
