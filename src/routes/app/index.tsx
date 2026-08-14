@@ -1157,10 +1157,10 @@ function DealDetailDrawer({
                     {state.deal.company}
                   </h2>
                   <span
-                    className={`mt-2.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${STAGE_META[state.deal.stage].badge}`}
+                    className={`mt-2.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${(STAGE_META[state.deal.stage] ?? STAGE_META.Lead).badge}`}
                   >
                     <span
-                      className={`h-1.5 w-1.5 rounded-full ${STAGE_META[state.deal.stage].dot}`}
+                      className={`h-1.5 w-1.5 rounded-full ${(STAGE_META[state.deal.stage] ?? STAGE_META.Lead).dot}`}
                     />
                     {state.deal.stage}
                   </span>
