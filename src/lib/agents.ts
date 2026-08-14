@@ -15,17 +15,22 @@ import { createServerFn } from "@tanstack/react-start";
 import { sql } from "~/db";
 import { hashPassword, readSession } from "./auth-core";
 import type { DbStatus } from "./pipeline";
+import { runDynamicQuery } from "./pipeline";
+import { PLAN_PRICING } from "./pricing";
 
-/** One roster row — a role='agent' user with their deal counts. */
+/** One roster row — a role='agent' user with their deal counts + open MRR. */
 export interface AgentInfo {
   id: string;
   name: string;
   email: string;
+  role: "agent";
   created_at: string;
   /** Deals in an open stage (not Closed Won / Closed Lost). */
   openDeals: number;
   /** All deals owned, any stage. */
   totalDeals: number;
+  /** Sum of MRR across the agent's open deals — computed from the plan, never stored. */
+  openMrr: number;
 }
 
 export type AgentErrorReason =
@@ -149,25 +154,39 @@ export const listAgents = createServerFn({ method: "GET" }).handler(
       if ("error" in guard) return guard.error;
 
       const db = sql();
-      const rows = await db`
-        select u.id, u.name, u.email, u.created_at,
+      // MRR is derived from the plan in code, so the roster's open-MRR sum uses
+      // the plan constants inlined as literals — the Neon HTTP driver stringifies
+      // tagged-template bind params, which breaks CASE type inference (integer vs
+      // text), so this query runs through runDynamicQuery with zero bind args.
+      const rosterSql = `
+        select u.id, u.name, u.email, u.role, u.created_at,
           count(d.id) filter (where d.stage not in ('Closed Won', 'Closed Lost')) as open_deals,
-          count(d.id) as total_deals
+          count(d.id) as total_deals,
+          coalesce(sum(
+            case
+              when d.stage not in ('Closed Won', 'Closed Lost')
+                then case d.plan when 'Founder' then ${PLAN_PRICING.Founder.mrr} else ${PLAN_PRICING.Studio.mrr} end
+              else 0
+            end
+          ), 0) as open_mrr
         from users u
         left join deals d on d.owner_id = u.id
         where u.role = 'agent'
         group by u.id
         order by u.name asc
       `;
+      const rows = await runDynamicQuery(db, rosterSql, []);
       return {
         ok: true,
         agents: rows.map((r) => ({
           id: String(r.id),
           name: String(r.name),
           email: String(r.email),
+          role: "agent" as const,
           created_at: new Date(r.created_at as Date).toISOString(),
           openDeals: Number(r.open_deals),
           totalDeals: Number(r.total_deals),
+          openMrr: Math.round(Number(r.open_mrr) * 100) / 100,
         })),
       };
     } catch (err) {

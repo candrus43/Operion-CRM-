@@ -108,6 +108,16 @@ function relTime(iso: string | null | undefined): string {
   return `${Math.floor(mo / 12)}y ago`;
 }
 
+/** "Jordan Lee" → "JL" — tiny avatar initials for the assigned-agent chip. */
+function ownerInitials(name: string): string {
+  return name
+    .split(" ")
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+}
+
 function friendlyError(reason: DbStatus): string {
   switch (reason) {
     case "db-not-connected":
@@ -324,9 +334,24 @@ function DealCard({
           "No next step set"
         )}
       </p>
-      <div className="mt-3 flex items-center justify-between border-t border-white/[0.05] pt-2.5">
-        <span className="text-[11px] text-white/35">{relTime(deal.last_activity_at)}</span>
-        <span className="flex items-center gap-1 text-[11px] text-white/25 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/[0.05] pt-2.5">
+        <span className="flex min-w-0 items-center gap-2">
+          {deal.owner_name ? (
+            <span
+              title={`Assigned to ${deal.owner_name}`}
+              className="inline-flex min-w-0 max-w-[55%] items-center gap-1.5 rounded-full bg-white/[0.05] py-0.5 pr-2 pl-0.5 ring-1 ring-inset ring-white/[0.06]"
+            >
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500/70 to-blue-500/40 text-[7px] font-semibold text-white">
+                {ownerInitials(deal.owner_name)}
+              </span>
+              <span className="truncate text-[11px] text-white/60">{deal.owner_name}</span>
+            </span>
+          ) : null}
+          <span className="shrink-0 text-[11px] text-white/35">
+            {relTime(deal.last_activity_at)}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1 text-[11px] text-white/25 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
           {Icons.grip}
           <span className="tracking-wide">drag</span>
         </span>

@@ -92,6 +92,15 @@ function formatDate(iso: string | null | undefined): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+function formatUSD(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(v);
+}
+
 /* ------------------------------------------------------------------ */
 /* Owner-only guard                                                     */
 /* ------------------------------------------------------------------ */
@@ -277,12 +286,14 @@ function RosterTable({ agents, loading }: { agents: AgentInfo[] | null; loading:
   }
   return (
     <div className="glass-deep scroll-thin overflow-x-auto rounded-2xl">
-      <table className="w-full min-w-[560px] text-left">
+      <table className="w-full min-w-[660px] text-left">
         <thead>
           <tr className="border-b border-white/[0.06] text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
             <th className="px-5 py-3.5">Agent</th>
             <th className="px-4 py-3.5">Email</th>
+            <th className="px-4 py-3.5">Role</th>
             <th className="px-4 py-3.5 text-right">Open deals</th>
+            <th className="px-4 py-3.5 text-right">Open MRR</th>
             <th className="px-5 py-3.5 text-right">Created</th>
           </tr>
         </thead>
@@ -306,7 +317,16 @@ function RosterTable({ agents, loading }: { agents: AgentInfo[] | null; loading:
                 </span>
               </td>
               <td className="px-4 py-3.5 text-muted">{a.email}</td>
+              <td className="px-4 py-3.5">
+                <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] font-medium text-white/60 ring-1 ring-inset ring-white/[0.08]">
+                  {a.role === "agent" ? "Agent" : a.role}
+                </span>
+              </td>
               <td className="px-4 py-3.5 text-right tabular-nums text-fg">{a.openDeals}</td>
+              <td className="px-4 py-3.5 text-right tabular-nums text-fg">
+                {formatUSD(a.openMrr)}
+                <span className="ml-0.5 text-[11px] font-medium text-white/35">/mo</span>
+              </td>
               <td className="px-5 py-3.5 text-right text-white/40 tabular-nums">
                 {formatDate(a.created_at)}
               </td>

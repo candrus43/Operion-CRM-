@@ -142,11 +142,17 @@ export interface DealQueryScope {
  *   const rows = await db.query(scope.sql, scope.args);
  */
 export function dealQueryScope(user: SessionUser): DealQueryScope {
+  // Both scopes join `users` so every deal row carries `owner_name` — the board
+  // cards show the assigned agent, and the reports share the same rows. The
+  // WHERE clause is the scope: owners see every deal, agents only their own.
   if (user.role === "owner") {
-    return { sql: "select * from deals order by updated_at desc", args: [] };
+    return {
+      sql: "select d.*, u.name as owner_name from deals d left join users u on u.id = d.owner_id order by d.updated_at desc",
+      args: [],
+    };
   }
   return {
-    sql: "select * from deals where owner_id = $1 order by updated_at desc",
+    sql: "select d.*, u.name as owner_name from deals d left join users u on u.id = d.owner_id where d.owner_id = $1 order by d.updated_at desc",
     args: [user.id],
   };
 }
