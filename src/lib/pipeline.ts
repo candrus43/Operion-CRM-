@@ -243,7 +243,7 @@ async function fetchOwnedDeal(
  * the resulting query text is identical to the original, and the values stay
  * parameterized (never `db.unsafe()`).
  */
-async function runDynamicQuery(
+export async function runDynamicQuery(
   db: ReturnType<typeof sql>,
   sqlText: string,
   args: unknown[],

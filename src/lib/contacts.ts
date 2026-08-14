@@ -15,7 +15,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { sql } from "~/db";
 import { readSession } from "./auth-core";
-import type { DbStatus, Stage } from "./pipeline";
+import { runDynamicQuery, type DbStatus, type Stage } from "./pipeline";
 import { PLAN_PRICING, annualValue, firstYearValue, isPlan, type Plan } from "./pricing";
 
 /* ------------------------------------------------------------------ */
@@ -162,7 +162,8 @@ export const getContactDetail = createServerFn({ method: "POST" })
           ? "where d.contact_id = $1"
           : "where d.contact_id = $1 and d.owner_id = $2";
       const args = user.role === "owner" ? [data.contactId] : [data.contactId, user.id];
-      const dealRows = await db.query(
+      const dealRows = await runDynamicQuery(
+        db,
         `select d.id, d.company, d.stage, d.plan, d.owner_id, u.name as owner_name, d.updated_at
          from deals d left join users u on u.id = d.owner_id
          ${where}
@@ -239,7 +240,8 @@ export const updateContact = createServerFn({ method: "POST" })
       if (data.notes !== undefined) push("notes", data.notes?.trim() || null);
       if (sets.length === 0) return { ok: true };
 
-      await db.query(
+      await runDynamicQuery(
+        db,
         `update contacts set ${sets.join(", ")} where id = $${args.length + 1}`,
         [...args, data.contactId],
       );
