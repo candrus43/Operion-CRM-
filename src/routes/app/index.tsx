@@ -312,14 +312,39 @@ function DealCard({
           <PlanBadge plan={deal.plan} />
         </span>
       </div>
-      <div className="mt-1 flex items-baseline gap-1.5">
-        <span className="text-[13px] font-semibold tabular-nums text-white/90">
-          {formatUSD(deal.mrr)}
-          <span className="text-[11px] font-medium text-white/50">/mo</span>
-        </span>
-        <span className="text-[11px] tabular-nums text-white/40">
-          · {formatUSD(deal.firstYear)} yr 1
-        </span>
+      {/* Operion subscription pricing — computed from the plan, never typed */}
+      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-xl border border-white/[0.04] bg-white/[0.03] px-2.5 py-2">
+        <div>
+          <p className="text-[9px] font-medium uppercase tracking-[0.12em] text-white/30">
+            Setup fee
+          </p>
+          <p className="mt-0.5 text-[12px] font-semibold tabular-nums text-white/85">
+            {formatUSD(deal.setupFee)}
+          </p>
+        </div>
+        <div>
+          <p className="text-[9px] font-medium uppercase tracking-[0.12em] text-white/30">MRR</p>
+          <p className="mt-0.5 text-[12px] font-semibold tabular-nums text-white/85">
+            {formatUSD(deal.mrr)}
+            <span className="text-[10px] font-medium text-white/45">/mo</span>
+          </p>
+        </div>
+        <div>
+          <p className="text-[9px] font-medium uppercase tracking-[0.12em] text-white/30">
+            Annual value
+          </p>
+          <p className="mt-0.5 text-[12px] font-semibold tabular-nums text-white/85">
+            {formatUSD(deal.annual)}
+          </p>
+        </div>
+        <div>
+          <p className="text-[9px] font-medium uppercase tracking-[0.12em] text-white/30">
+            First-year total
+          </p>
+          <p className="mt-0.5 text-[12px] font-semibold tabular-nums text-gradient-violet">
+            {formatUSD(deal.firstYear)}
+          </p>
+        </div>
       </div>
       <p className="mt-0.5 truncate text-[12px] text-muted">
         {deal.contact_name || "No contact"}
@@ -1701,7 +1726,13 @@ function DealDetailDrawer({
                 </p>
                 <PlanBadge plan={state.deal.plan} />
               </div>
-              <div className="mt-3 grid grid-cols-3 gap-3">
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-[10px] text-white/30">Setup fee</p>
+                  <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
+                    {formatUSD(state.deal.setupFee)}
+                  </p>
+                </div>
                 <div>
                   <p className="text-[10px] text-white/30">MRR</p>
                   <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
@@ -1710,13 +1741,13 @@ function DealDetailDrawer({
                   </p>
                 </div>
                 <div>
-                  <p className="text-[10px] text-white/30">Annual</p>
+                  <p className="text-[10px] text-white/30">Annual value</p>
                   <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-fg">
                     {formatUSD(state.deal.annual)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-[10px] text-white/30">First year</p>
+                  <p className="text-[10px] text-white/30">First-year total</p>
                   <p className="mt-0.5 text-[15px] font-semibold tabular-nums text-gradient-violet">
                     {formatUSD(state.deal.firstYear)}
                   </p>
