@@ -938,13 +938,16 @@ function DealFormModal({
   );
 }
 
-const ACTIVITY_META: Record<string, { icon: React.ReactNode; label: string }> = {
-  email: { icon: Icons.mail, label: "Email" },
-  call: { icon: Icons.phone, label: "Call" },
-  meeting: { icon: Icons.users, label: "Meeting" },
-  stage: { icon: Icons.arrow, label: "Stage change" },
-  note: { icon: Icons.note, label: "Note" },
-  created: { icon: Icons.plus, label: "Created" },
+const ACTIVITY_META: Record<string, { icon: React.ReactNode; label: string; tone: string }> = {
+  email: { icon: Icons.mail, label: "Email", tone: "text-sky-300" },
+  call: { icon: Icons.phone, label: "Call", tone: "text-teal-300" },
+  meeting: { icon: Icons.users, label: "Meeting", tone: "text-fuchsia-300" },
+  stage: { icon: Icons.arrow, label: "Stage change", tone: "text-violet-300" },
+  note: { icon: Icons.note, label: "Note", tone: "text-amber-300" },
+  created: { icon: Icons.plus, label: "Created", tone: "text-emerald-300" },
+  plan: { icon: Icons.calendar, label: "Plan", tone: "text-indigo-300" },
+  contact: { icon: Icons.users, label: "Contact", tone: "text-cyan-300" },
+  edit: { icon: Icons.edit, label: "Edit", tone: "text-white/60" },
 };
 
 function DealDetailDrawer({
@@ -1014,6 +1017,17 @@ function DealDetailDrawer({
     };
   }, [dealId]);
 
+  /** Re-fetch deal + activities so server-written timeline rows (stage moves,
+   *  closes, note saves) appear in the open drawer without a reopen. */
+  async function reloadDetail() {
+    const res = await getDealDetail({ data: { dealId } });
+    if (!res.ok) return;
+    setState((s) =>
+      s.status === "ready"
+        ? { status: "ready", deal: res.deal, activities: res.activities, contact: res.contact }
+        : s,
+    );
+  }
   async function saveNotes() {
     if (state.status !== "ready") return;
     setSavingNotes(true);
@@ -1084,6 +1098,7 @@ function DealDetailDrawer({
       // card moves to Closed Won (same refresh path as drag/create).
       setState((s) => (s.status === "ready" ? { ...s, deal: res.deal } : s));
       notify("Payment link sent — deal closed");
+      void reloadDetail();
       onChanged();
     } catch {
       setMarkWonError("Something went wrong. Please try again.");
@@ -1105,6 +1120,7 @@ function DealDetailDrawer({
     }
     setState((s) => (s.status === "ready" ? { ...s, deal: { ...s.deal, stage: next } } : s));
     notify(`Moved to ${next}`);
+    void reloadDetail();
     onChanged();
   }
 
@@ -1653,6 +1669,7 @@ function DealDetailDrawer({
                     const meta = ACTIVITY_META[a.type] ?? {
                       icon: Icons.note,
                       label: "Activity",
+                      tone: "text-white/50",
                     };
                     return (
                       <div key={a.id} className="glass flex items-start gap-3 rounded-2xl p-3.5">
@@ -1661,7 +1678,7 @@ function DealDetailDrawer({
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline justify-between gap-2">
-                            <p className="text-[11px] font-medium text-white/50">{meta.label}</p>
+                            <p className={`text-[11px] font-medium ${meta.tone}`}>{meta.label}</p>
                             <p className="shrink-0 text-[11px] text-white/30">
                               {relTime(a.created_at)}
                             </p>
