@@ -209,7 +209,7 @@ function AgentMrrTable({ rows }: { rows: AgentMrrRow[] }) {
             <th className="px-4 py-3.5 text-right">Open MRR</th>
             <th className="px-4 py-3.5 text-right">Weighted MRR</th>
             <th className="px-4 py-3.5 text-right">Closed-won MRR</th>
-            <th className="px-5 py-3.5 text-right">Deals</th>
+            <th className="px-5 py-3.5 text-right">Total deals</th>
           </tr>
         </thead>
         <tbody>
@@ -484,15 +484,25 @@ function CommissionsPage() {
             />
             <MetricCard
               label="Avg deal size"
-              value={formatUSD(metrics?.avgDealSize)}
+              value={
+                (metrics?.closedWonCount ?? 0) > 0 ? formatUSD(metrics?.avgDealSize) : "—"
+              }
               sub="Mean MRR per closed-won deal"
               kind="actual"
               icon={Icons.gauge}
             />
             <MetricCard
               label="Win rate"
-              value={formatPercent(metrics?.winRate)}
-              sub={`${metrics?.closedWonCount ?? 0} won · ${metrics?.closedLostCount ?? 0} lost`}
+              value={
+                (metrics?.closedWonCount ?? 0) + (metrics?.closedLostCount ?? 0) > 0
+                  ? formatPercent(metrics?.winRate)
+                  : "—"
+              }
+              sub={
+                (metrics?.closedWonCount ?? 0) + (metrics?.closedLostCount ?? 0) > 0
+                  ? `${metrics?.closedWonCount ?? 0} won · ${metrics?.closedLostCount ?? 0} lost`
+                  : "No closed deals yet"
+              }
               kind="actual"
               icon={Icons.percent}
             />
