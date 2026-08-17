@@ -219,6 +219,14 @@ const Icons = {
       <path d="m12 5 7 7-7 7" />
     </Svg>
   ),
+  swap: (
+    <Svg>
+      <path d="M8 3 4 7l4 4" />
+      <path d="M4 7h16" />
+      <path d="m16 21 4-4-4-4" />
+      <path d="M20 17H4" />
+    </Svg>
+  ),
   calendar: (
     <Svg>
       <rect x="3" y="4" width="18" height="18" rx="2" />
@@ -943,6 +951,7 @@ const ACTIVITY_META: Record<string, { icon: React.ReactNode; label: string; tone
   call: { icon: Icons.phone, label: "Call", tone: "text-teal-300" },
   meeting: { icon: Icons.users, label: "Meeting", tone: "text-fuchsia-300" },
   stage: { icon: Icons.arrow, label: "Stage change", tone: "text-violet-300" },
+  assignment: { icon: Icons.swap, label: "Assignment", tone: "text-violet-300" },
   note: { icon: Icons.note, label: "Note", tone: "text-amber-300" },
   created: { icon: Icons.plus, label: "Created", tone: "text-emerald-300" },
   plan: { icon: Icons.calendar, label: "Plan", tone: "text-indigo-300" },
@@ -987,6 +996,9 @@ function DealDetailDrawer({
   const [stageMoveBusy, setStageMoveBusy] = useState(false);
   const [assignBusy, setAssignBusy] = useState(false);
   const [assignError, setAssignError] = useState<string | null>(null);
+  /** Pending reassign target — set when the owner picks a new owner in the
+   *  select; the deal is only reassigned after the confirm dialog. */
+  const [assignTarget, setAssignTarget] = useState<PipelineUser | null>(null);
   const [actOpen, setActOpen] = useState(false);
   const [actType, setActType] = useState<ActivityType>("call");
   const [actSummary, setActSummary] = useState("");
@@ -1168,7 +1180,7 @@ function DealDetailDrawer({
     }
   }
 
-  /** Owner-only: reassign the deal to another user, live from the drawer. */
+  /** Owner-only: reassign the deal — the confirm dialog gates this call. */
   async function handleReassign(newOwnerId: string) {
     if (state.status !== "ready" || assignBusy || newOwnerId === state.deal.owner_id) return;
     setAssignBusy(true);
@@ -1186,6 +1198,7 @@ function DealDetailDrawer({
           ? { ...s, deal: { ...s.deal, owner_id: newOwnerId, owner_name: next?.name ?? null } }
           : s,
       );
+      setAssignTarget(null);
       notify(`Assigned to ${next?.name ?? "new owner"}`);
       onChanged();
     } catch {
@@ -1260,7 +1273,13 @@ function DealDetailDrawer({
                     <>
                       <select
                         value={state.deal.owner_id ?? ""}
-                        onChange={(e) => void handleReassign(e.target.value)}
+                        onChange={(e) => {
+                          const target = users.find((u) => u.id === e.target.value);
+                          if (state.status !== "ready") return;
+                          if (!target || target.id === state.deal.owner_id) return;
+                          setAssignError(null);
+                          setAssignTarget(target);
+                        }}
                         disabled={assignBusy}
                         className="select-dark select-dark-sm mt-2 w-full"
                         aria-label="Assigned to"
@@ -1277,14 +1296,6 @@ function DealDetailDrawer({
                           </option>
                         ))}
                       </select>
-                      {assignError ? (
-                        <p
-                          role="alert"
-                          className="mt-2 rounded-lg border border-red-400/20 bg-red-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-red-300"
-                        >
-                          {assignError}
-                        </p>
-                      ) : null}
                     </>
                   ) : (
                     <p className="mt-1.5 truncate text-sm font-medium text-fg">
@@ -1811,6 +1822,99 @@ function DealDetailDrawer({
                   <>
                     {Icons.check}
                     Send & close
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Reassign confirmation — the deal is never reassigned without an
+          explicit confirm, so picking a new owner from the select is safe. */}
+      {assignTarget && state.status === "ready" ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
+          <button
+            type="button"
+            aria-label="Close dialog"
+            onClick={() => {
+              if (!assignBusy) {
+                setAssignTarget(null);
+                setAssignError(null);
+              }
+            }}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          />
+          <div className="rise-in glass ring-gradient grain relative w-full max-w-md rounded-3xl p-6 sm:p-7">
+            <div className="sheen-overlay" aria-hidden="true" />
+            <div className="mb-5">
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-accent-light">
+                Reassign deal
+              </p>
+              <h3 className="mt-1 text-2xl font-semibold tracking-[-0.045em] text-gradient-violet">
+                {state.deal.owner_name
+                  ? `Move to ${assignTarget.name}?`
+                  : `Assign to ${assignTarget.name}?`}
+              </h3>
+            </div>
+            <p className="text-[13px] leading-relaxed text-muted">
+              {state.deal.owner_name ? (
+                <>
+                  <span className="font-medium text-fg">{state.deal.company}</span> will leave{" "}
+                  <span className="font-medium text-fg">{state.deal.owner_name}</span>
+                  &apos;s board and move to{" "}
+                  <span className="font-medium text-fg">{assignTarget.name}</span>
+                  {assignTarget.id === me.id ? " (you)" : ""}.
+                </>
+              ) : (
+                <>
+                  <span className="font-medium text-fg">{state.deal.company}</span> will move to{" "}
+                  <span className="font-medium text-fg">{assignTarget.name}</span>
+                  {assignTarget.id === me.id ? " (you)" : ""}&apos;s board.
+                </>
+              )}{" "}
+              The reassignment shows up in the deal&apos;s activity timeline.
+            </p>
+
+            {assignError ? (
+              <p
+                role="alert"
+                className="mt-4 rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-[13px] leading-relaxed text-red-300"
+              >
+                {assignError}
+              </p>
+            ) : null}
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setAssignTarget(null);
+                  setAssignError(null);
+                }}
+                disabled={assignBusy}
+                className="btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleReassign(assignTarget.id)}
+                disabled={assignBusy}
+                className="btn-primary min-w-32"
+              >
+                {assignBusy ? (
+                  <>
+                    <span
+                      aria-hidden="true"
+                      className="h-4 w-4 animate-spin rounded-full border-2 border-black/20 border-t-black"
+                    />
+                    Reassigning…
+                  </>
+                ) : (
+                  <>
+                    {Icons.swap}
+                    {state.deal.owner_name ? "Reassign" : "Assign"}
                   </>
                 )}
               </button>
