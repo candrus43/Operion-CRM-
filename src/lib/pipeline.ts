@@ -61,7 +61,11 @@ export interface Deal {
   mrr: number;
   /** Computed from the plan (MRR × 12) — never stored. */
   annual: number;
-  /** Computed from the plan (setup + annual) — never stored. */
+  /**
+   * Computed from the plan (setup fee + 11 × MRR — the revision-6 first-year
+   * cash total: setup at signup, then 11 monthly charges from day 31).
+   * Never stored.
+   */
   firstYear: number;
   /** True once the Closed Won deal's setup fee was collected (commission earned). */
   setup_fee_collected: boolean;
