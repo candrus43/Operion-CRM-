@@ -527,7 +527,7 @@ export const updateDeal = createServerFn({ method: "POST" })
           : [];
         const name = uRows.length > 0 && uRows[0].name != null ? String(uRows[0].name) : null;
         changes.push({
-          type: "note",
+          type: "assignment",
           summary: name ? `Assigned to ${name}` : "Deal reassigned",
         });
       }
@@ -973,8 +973,9 @@ export const unmarkSetupFeeCollected = createServerFn({ method: "POST" })
 
 /**
  * Types a USER may log manually. System-generated entries use other types
- * (`stage` from markWon; `note` from reassignDeal) — those are read-only and
- * never selectable here, but the timeline renders them via ACTIVITY_META.
+ * (`stage` from markWon; `assignment` from reassignDeal / owner edits) — those
+ * are read-only and never selectable here, but the timeline renders them via
+ * ACTIVITY_META.
  */
 export const ACTIVITY_TYPES = ["call", "email", "meeting", "note"] as const;
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];

@@ -16,7 +16,7 @@ import { sql } from "~/db";
 import { hashPassword, readSession } from "./auth-core";
 import type { DbStatus } from "./pipeline";
 import { runDynamicQuery } from "./pipeline";
-import { PLAN_PRICING } from "./pricing";
+import { PLAN_PRICING, commissionFor } from "./pricing";
 
 /** One roster row — a role='agent' user with their deal counts + open MRR. */
 export interface AgentInfo {
@@ -29,8 +29,16 @@ export interface AgentInfo {
   openDeals: number;
   /** All deals owned, any stage. */
   totalDeals: number;
+  /** Closed Won deals owned (any collection status). */
+  wonDeals: number;
   /** Sum of MRR across the agent's open deals — computed from the plan, never stored. */
   openMrr: number;
+  /**
+   * Commission EARNED so far: 25% of the setup fee on Closed Won deals whose
+   * setup fee has been marked collected. Same math as the Commissions tab
+   * (earned vs pending) — computed from the plan, never stored.
+   */
+  commissionEarned: number;
 }
 
 export type AgentErrorReason =
@@ -162,13 +170,21 @@ export const listAgents = createServerFn({ method: "GET" }).handler(
         select u.id, u.name, u.email, u.role, u.created_at,
           count(d.id) filter (where d.stage not in ('Closed Won', 'Closed Lost')) as open_deals,
           count(d.id) as total_deals,
+          count(d.id) filter (where d.stage = 'Closed Won') as won_deals,
           coalesce(sum(
             case
               when d.stage not in ('Closed Won', 'Closed Lost')
                 then case d.plan when 'Founder' then ${PLAN_PRICING.Founder.mrr} else ${PLAN_PRICING.Studio.mrr} end
               else 0
             end
-          ), 0) as open_mrr
+          ), 0) as open_mrr,
+          coalesce(sum(
+            case
+              when d.stage = 'Closed Won' and d.setup_fee_collected
+                then case d.plan when 'Founder' then ${commissionFor("Founder")} else ${commissionFor("Studio")} end
+              else 0
+            end
+          ), 0) as commission_earned
         from users u
         left join deals d on d.owner_id = u.id
         where u.role = 'agent'
@@ -186,7 +202,9 @@ export const listAgents = createServerFn({ method: "GET" }).handler(
           created_at: new Date(r.created_at as Date).toISOString(),
           openDeals: Number(r.open_deals),
           totalDeals: Number(r.total_deals),
+          wonDeals: Number(r.won_deals),
           openMrr: Math.round(Number(r.open_mrr) * 100) / 100,
+          commissionEarned: Math.round(Number(r.commission_earned) * 100) / 100,
         })),
       };
     } catch (err) {
@@ -203,7 +221,8 @@ export type ReassignDealResult =
 /**
  * Move a deal to another user (agent or owner). OWNER-ONLY — agents get a clear
  * error. Validates that both the deal and the target user exist, updates the
- * deal's owner, and records a non-fatal activity note on the deal timeline.
+ * deal's owner, and records a non-fatal 'assignment' row on the deal timeline
+ * ("Assigned to <name>") so the drawer's activity feed stays honest.
  */
 export const reassignDeal = createServerFn({ method: "POST" })
   .validator((d: { dealId: string; newOwnerId: string }) => d)
@@ -233,7 +252,7 @@ export const reassignDeal = createServerFn({ method: "POST" })
       try {
         await db`
           insert into activities (deal_id, type, summary, author_id)
-          values (${data.dealId}, 'note', ${`Assigned to ${String(userRows[0].name)}`}, ${guard.user.id})
+          values (${data.dealId}, 'assignment', ${`Assigned to ${String(userRows[0].name)}`}, ${guard.user.id})
         `;
       } catch (err) {
         // Non-fatal: the reassignment itself already succeeded.
@@ -242,6 +261,97 @@ export const reassignDeal = createServerFn({ method: "POST" })
       return { ok: true, dealId: data.dealId, ownerId: data.newOwnerId };
     } catch (err) {
       console.error("[operion-crm] reassignDeal failed:", err);
+      return { ok: false, reason: "db-error", message: "Something went wrong. Please try again." };
+    }
+  });
+
+export type UpdateAgentResult =
+  | { ok: true; agent: { id: string; name: string; email: string } }
+  | { ok: false; reason: AgentErrorReason; message: string };
+
+/**
+ * Edit an existing agent — rename, change email, and/or reset the password.
+ * OWNER-ONLY, and the target must be a role='agent' user (the owner account is
+ * not editable from this surface). Email format and duplicates are validated
+ * (duplicates exclude the agent being edited); a password is only re-hashed
+ * when one is supplied (blank = keep the current one). Returns only
+ * { id, name, email } — the password hash never leaves the server.
+ */
+export const updateAgent = createServerFn({ method: "POST" })
+  .validator((d: { userId: string; name: string; email: string; password?: string }) => d)
+  .handler(async ({ data }): Promise<UpdateAgentResult> => {
+    if (!process.env.DATABASE_URL) {
+      return { ok: false, reason: "db-not-connected", message: "Database is not connected yet." };
+    }
+    const name = (data.name ?? "").trim();
+    const email = (data.email ?? "").trim().toLowerCase();
+    const password = data.password ?? "";
+    try {
+      const guard = await requireOwner();
+      if ("error" in guard) return guard.error;
+
+      if (!name) return { ok: false, reason: "invalid", message: "Enter the agent's name." };
+      if (!EMAIL_RE.test(email)) {
+        return { ok: false, reason: "invalid-email", message: "Enter a valid email address." };
+      }
+      if (password.length > 0 && password.length < 8) {
+        return {
+          ok: false,
+          reason: "short-password",
+          message: "Password must be at least 8 characters.",
+        };
+      }
+
+      const db = sql();
+      // Target must still exist as an agent — the owner's own row is off-limits here.
+      const target = await db`
+        select id from users where id = ${data.userId} and role = 'agent' limit 1
+      `;
+      if (target.length === 0) {
+        return { ok: false, reason: "not-found", message: "That agent no longer exists." };
+      }
+      const dup = await db`
+        select id from users where email = ${email} and id <> ${data.userId} limit 1
+      `;
+      if (dup.length > 0) {
+        return {
+          ok: false,
+          reason: "duplicate-email",
+          message: `An account with ${email} already exists.`,
+        };
+      }
+      const rows =
+        password.length > 0
+          ? await db`
+              update users
+              set name = ${name}, email = ${email}, password_hash = ${hashPassword(password)}
+              where id = ${data.userId} and role = 'agent'
+              returning id, name, email
+            `
+          : await db`
+              update users
+              set name = ${name}, email = ${email}
+              where id = ${data.userId} and role = 'agent'
+              returning id, name, email
+            `;
+      if (rows.length === 0) {
+        return { ok: false, reason: "not-found", message: "That agent no longer exists." };
+      }
+      const a = rows[0];
+      return {
+        ok: true,
+        agent: { id: String(a.id), name: String(a.name), email: String(a.email) },
+      };
+    } catch (err) {
+      // Unique-violation race (two edits in flight) — same clear message as the pre-check.
+      if ((err as { code?: string }).code === "23505") {
+        return {
+          ok: false,
+          reason: "duplicate-email",
+          message: `An account with ${email} already exists.`,
+        };
+      }
+      console.error("[operion-crm] updateAgent failed:", err);
       return { ok: false, reason: "db-error", message: "Something went wrong. Please try again." };
     }
   });

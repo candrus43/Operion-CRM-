@@ -4,6 +4,7 @@ import type { SessionUser } from "~/lib/auth";
 import {
   createAgent,
   listAgents,
+  updateAgent,
   type AgentInfo,
 } from "~/lib/agents";
 
@@ -79,11 +80,24 @@ const Icons = {
       <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </Svg>
   ),
+  copy: (
+    <Svg className="h-3.5 w-3.5">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </Svg>
+  ),
+  edit: (
+    <Svg className="h-3.5 w-3.5">
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    </Svg>
+  ),
 };
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                              */
 /* ------------------------------------------------------------------ */
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -99,6 +113,77 @@ function formatUSD(v: number | null | undefined): string {
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(v);
+}
+
+/** "Jordan Lee" → "JL" — avatar initials. */
+function initials(name: string): string {
+  return name
+    .split(" ")
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Clipboard API unavailable (non-secure context) — fall back to a temp
+    // textarea so the copy affordance still works.
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Copyable credential row — label + value + copy button with "Copied" feedback. */
+function CopyRow({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-white/[0.04] px-3.5 py-2.5 ring-1 ring-inset ring-white/[0.06]">
+      <div className="min-w-0">
+        <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/30">{label}</p>
+        <p className="mt-0.5 truncate text-[13px] font-medium text-fg">{value}</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => {
+          void copyText(value).then((ok) => {
+            if (ok) {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1600);
+            }
+          });
+        }}
+        className={`btn-ghost h-8 shrink-0 px-3 text-[11px] ${copied ? "text-emerald-300" : ""}`}
+        aria-label={`Copy ${label.toLowerCase()}`}
+      >
+        {copied ? (
+          <>
+            <span className="text-emerald-300">{Icons.check}</span>
+            Copied
+          </>
+        ) : (
+          <>
+            <span className="text-white/40">{Icons.copy}</span>
+            Copy
+          </>
+        )}
+      </button>
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -127,13 +212,45 @@ function OwnerOnlyState() {
 /* Create-agent form                                                    */
 /* ------------------------------------------------------------------ */
 
+interface FieldErrors {
+  name?: string;
+  email?: string;
+  password?: string;
+}
+
 const EMPTY_FORM = { name: "", email: "", password: "" };
 
-function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
+/** Client-side validation mirrors the server rules (email format, ≥8 char
+ *  password, duplicate email vs. the already-loaded roster) so the owner gets
+ *  inline feedback before any network call. */
+function validateCreate(
+  values: typeof EMPTY_FORM,
+  existing: AgentInfo[],
+): FieldErrors {
+  const errors: FieldErrors = {};
+  const email = values.email.trim().toLowerCase();
+  if (!values.name.trim()) errors.name = "Enter the agent's name.";
+  if (!EMAIL_RE.test(email)) {
+    errors.email = "Enter a valid email address.";
+  } else if (existing.some((a) => a.email.toLowerCase() === email)) {
+    errors.email = `An account with ${email} already exists.`;
+  }
+  if (values.password.length < 8) errors.password = "At least 8 characters.";
+  return errors;
+}
+
+function CreateAgentForm({
+  agents,
+  onCreated,
+}: {
+  agents: AgentInfo[] | null;
+  onCreated: () => void;
+}) {
   const [values, setValues] = useState(EMPTY_FORM);
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [created, setCreated] = useState<{ name: string; email: string; password: string } | null>(null);
   const [creating, setCreating] = useState(false);
 
   const set = (patch: Partial<typeof values>) => setValues((v) => ({ ...v, ...patch }));
@@ -141,27 +258,38 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (creating) return;
-    setError(null);
-    setSuccess(null);
+    const existing = agents ?? [];
+    const errs = validateCreate(values, existing);
+    setErrors(errs);
+    setServerError(null);
+    if (Object.keys(errs).length > 0) return;
     setCreating(true);
     try {
       const res = await createAgent({ data: values });
       if (!res.ok) {
-        setError(res.message);
+        if (res.reason === "duplicate-email") setErrors({ email: res.message });
+        else setServerError(res.message);
         return;
       }
       setValues(EMPTY_FORM);
       setShowPassword(false);
-      setSuccess(`${res.agent.name} is on board — they can sign in with ${res.agent.email}.`);
+      setCreated({
+        name: res.agent.name,
+        email: res.agent.email,
+        password: values.password,
+      });
       onCreated();
     } catch {
-      setError("Something went wrong. Please try again.");
+      setServerError("Something went wrong. Please try again.");
     } finally {
       setCreating(false);
     }
   }
 
   const fieldLabel = "text-[12px] font-medium text-white/70";
+  const fieldError = (msg?: string) =>
+    msg ? <p className="mt-1 text-[11px] leading-relaxed text-red-300">{msg}</p> : null;
+
   return (
     <form onSubmit={handleSubmit} className="grid gap-4 sm:grid-cols-3">
       <label className="flex flex-col gap-1.5">
@@ -173,7 +301,9 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
           placeholder="Jordan Lee"
           className="input-dark"
           aria-label="Agent name"
+          aria-invalid={errors.name ? true : undefined}
         />
+        {fieldError(errors.name)}
       </label>
 
       <label className="flex flex-col gap-1.5">
@@ -185,7 +315,9 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
           placeholder="jordan@operioncrm.com"
           className="input-dark"
           aria-label="Agent email"
+          aria-invalid={errors.email ? true : undefined}
         />
+        {fieldError(errors.email)}
       </label>
 
       <label className="flex flex-col gap-1.5">
@@ -198,6 +330,7 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
             placeholder="At least 8 characters"
             className="input-dark pr-10"
             aria-label="Temporary password"
+            aria-invalid={errors.password ? true : undefined}
           />
           <button
             type="button"
@@ -208,6 +341,7 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
             {showPassword ? Icons.eyeOff : Icons.eye}
           </button>
         </div>
+        {fieldError(errors.password)}
       </label>
 
       <div className="flex flex-wrap items-center gap-3 sm:col-span-3">
@@ -233,24 +367,235 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
         </p>
       </div>
 
-      {error ? (
+      {serverError ? (
         <p
           role="alert"
           className="rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-[13px] leading-relaxed text-red-300 sm:col-span-3"
         >
-          {error}
+          {serverError}
         </p>
       ) : null}
-      {success ? (
-        <p
+
+      {/* Credentials — shown ONCE right after creation, with copy affordances. */}
+      {created ? (
+        <div
           role="status"
-          className="flex items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.07] px-4 py-3 text-[13px] leading-relaxed text-emerald-300 sm:col-span-3"
+          className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.07] p-4 sm:col-span-3"
         >
-          <span className="shrink-0">{Icons.check}</span>
-          {success}
-        </p>
+          <div className="flex items-start justify-between gap-3">
+            <p className="flex items-center gap-2 text-[13px] leading-relaxed text-emerald-300">
+              <span className="shrink-0">{Icons.check}</span>
+              <span>
+                <span className="font-medium text-fg">{created.name}</span> is on board — share
+                these sign-in credentials with them.
+              </span>
+            </p>
+            <button
+              type="button"
+              onClick={() => setCreated(null)}
+              className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-white/35 transition-colors hover:bg-white/[0.06] hover:text-white/80"
+              aria-label="Dismiss credentials"
+            >
+              Dismiss
+            </button>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <CopyRow label="Email" value={created.email} />
+            <CopyRow label="Password" value={created.password} />
+          </div>
+          <p className="mt-2.5 text-[11px] leading-relaxed text-emerald-200/60">
+            Shown once — copy them now. They won&apos;t appear here again.
+          </p>
+        </div>
       ) : null}
     </form>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Edit-agent modal                                                     */
+/* ------------------------------------------------------------------ */
+
+function EditAgentModal({
+  agent,
+  agents,
+  onClose,
+  onSaved,
+}: {
+  agent: AgentInfo;
+  agents: AgentInfo[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [values, setValues] = useState({
+    name: agent.name,
+    email: agent.email,
+    password: "",
+  });
+  const [showPassword, setShowPassword] = useState(false);
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const set = (patch: Partial<typeof values>) => setValues((v) => ({ ...v, ...patch }));
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (saving) return;
+    const errs: FieldErrors = {};
+    const email = values.email.trim().toLowerCase();
+    if (!values.name.trim()) errs.name = "Enter the agent's name.";
+    if (!EMAIL_RE.test(email)) {
+      errs.email = "Enter a valid email address.";
+    } else if (
+      agents.some((a) => a.id !== agent.id && a.email.toLowerCase() === email)
+    ) {
+      errs.email = `An account with ${email} already exists.`;
+    }
+    if (values.password.length > 0 && values.password.length < 8) {
+      errs.password = "At least 8 characters — or leave blank to keep the current one.";
+    }
+    setErrors(errs);
+    setServerError(null);
+    if (Object.keys(errs).length > 0) return;
+    setSaving(true);
+    try {
+      const res = await updateAgent({
+        data: { userId: agent.id, name: values.name, email: values.email, password: values.password || undefined },
+      });
+      if (!res.ok) {
+        if (res.reason === "duplicate-email") setErrors({ email: res.message });
+        else setServerError(res.message);
+        return;
+      }
+      onSaved();
+    } catch {
+      setServerError("Something went wrong. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const fieldLabel = "text-[12px] font-medium text-white/70";
+  const fieldError = (msg?: string) =>
+    msg ? <p className="mt-1 text-[11px] leading-relaxed text-red-300">{msg}</p> : null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+      <button
+        type="button"
+        aria-label="Close dialog"
+        onClick={onClose}
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+      />
+      <form
+        onSubmit={handleSubmit}
+        className="rise-in glass ring-gradient grain relative max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-3xl p-6 sm:p-7"
+      >
+        <div className="sheen-overlay" aria-hidden="true" />
+        <div className="mb-6 flex items-center justify-between">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-accent-light">
+              Edit agent
+            </p>
+            <h2 className="mt-1 text-2xl font-semibold tracking-[-0.045em] text-gradient-violet">
+              {agent.name}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-white/[0.06] hover:text-fg"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M18 6 6 18" />
+              <path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="grid gap-4">
+          <label className="flex flex-col gap-1.5">
+            <span className={fieldLabel}>Name</span>
+            <input
+              autoFocus
+              value={values.name}
+              onChange={(e) => set({ name: e.target.value })}
+              className="input-dark"
+              aria-label="Agent name"
+              aria-invalid={errors.name ? true : undefined}
+            />
+            {fieldError(errors.name)}
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className={fieldLabel}>Email</span>
+            <input
+              type="email"
+              value={values.email}
+              onChange={(e) => set({ email: e.target.value })}
+              className="input-dark"
+              aria-label="Agent email"
+              aria-invalid={errors.email ? true : undefined}
+            />
+            {fieldError(errors.email)}
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className={fieldLabel}>Reset password</span>
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={values.password}
+                onChange={(e) => set({ password: e.target.value })}
+                placeholder="Leave blank to keep the current one"
+                className="input-dark pr-10"
+                aria-label="New password"
+                aria-invalid={errors.password ? true : undefined}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((s) => !s)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                className="absolute top-1/2 right-2 -translate-y-1/2 rounded-md p-1.5 text-white/40 transition-colors hover:text-white/80"
+              >
+                {showPassword ? Icons.eyeOff : Icons.eye}
+              </button>
+            </div>
+            {fieldError(errors.password)}
+          </label>
+
+          {serverError ? (
+            <p
+              role="alert"
+              className="rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-[13px] leading-relaxed text-red-300"
+            >
+              {serverError}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="mt-6 flex items-center justify-end gap-3">
+          <button type="button" onClick={onClose} disabled={saving} className="btn-ghost">
+            Cancel
+          </button>
+          <button type="submit" disabled={saving} className="btn-primary min-w-32">
+            {saving ? (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="h-4 w-4 animate-spin rounded-full border-2 border-black/20 border-t-black"
+                />
+                Saving…
+              </>
+            ) : (
+              "Save changes"
+            )}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -258,7 +603,85 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
 /* Roster                                                               */
 /* ------------------------------------------------------------------ */
 
-function RosterTable({ agents, loading }: { agents: AgentInfo[] | null; loading: boolean }) {
+function Stat({ label, value, accent = false, title }: { label: string; value: string; accent?: boolean; title?: string }) {
+  return (
+    <div
+      title={title}
+      className="rounded-xl bg-white/[0.03] px-3 py-2.5 ring-1 ring-inset ring-white/[0.05]"
+    >
+      <p className="truncate text-[10px] font-medium uppercase tracking-[0.12em] text-white/30">
+        {label}
+      </p>
+      <p
+        className={`mt-1 text-[15px] font-semibold tabular-nums ${
+          accent ? "text-emerald-300" : "text-fg"
+        }`}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function AgentCard({ agent, onEdit }: { agent: AgentInfo; onEdit: (a: AgentInfo) => void }) {
+  return (
+    <div className="glass ring-gradient grain relative overflow-hidden rounded-2xl p-5">
+      <div className="sheen-overlay" aria-hidden="true" />
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500/70 to-blue-500/40 text-[13px] font-semibold text-white ring-1 ring-white/15">
+            {initials(agent.name)}
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-[15px] font-semibold tracking-[-0.02em] text-fg">
+              {agent.name}
+            </p>
+            <p className="mt-0.5 truncate text-[12px] text-muted">{agent.email}</p>
+          </div>
+        </div>
+        <span className="inline-flex shrink-0 items-center rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] font-medium text-white/60 ring-1 ring-inset ring-white/[0.08]">
+          {agent.role === "agent" ? "Agent" : agent.role}
+        </span>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <Stat label="Open deals" value={String(agent.openDeals)} title="Deals in an open stage" />
+        <Stat label="Open MRR" value={`${formatUSD(agent.openMrr)}/mo`} title="Monthly recurring revenue on open deals" />
+        <Stat label="Closed won" value={String(agent.wonDeals)} title="Closed Won deals" />
+        <Stat
+          label="Commission earned"
+          value={formatUSD(agent.commissionEarned)}
+          accent={agent.commissionEarned > 0}
+          title="25% of setup fees collected on closed-won deals"
+        />
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/[0.06] pt-3.5">
+        <span className="truncate text-[11px] text-white/30">
+          Joined {formatDate(agent.created_at)}
+        </span>
+        <button
+          type="button"
+          onClick={() => onEdit(agent)}
+          className="btn-ghost h-8 shrink-0 px-3 text-[12px]"
+        >
+          <span className="text-white/40">{Icons.edit}</span>
+          Edit
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RosterCards({
+  agents,
+  loading,
+  onEdit,
+}: {
+  agents: AgentInfo[] | null;
+  loading: boolean;
+  onEdit: (a: AgentInfo) => void;
+}) {
   if (loading && agents === null) {
     return (
       <div className="glass-deep flex min-h-[120px] items-center justify-center rounded-2xl px-6 py-8">
@@ -285,55 +708,10 @@ function RosterTable({ agents, loading }: { agents: AgentInfo[] | null; loading:
     );
   }
   return (
-    <div className="glass-deep scroll-thin overflow-x-auto rounded-2xl">
-      <table className="w-full min-w-[660px] text-left">
-        <thead>
-          <tr className="border-b border-white/[0.06] text-[10px] font-medium uppercase tracking-[0.14em] text-white/30">
-            <th className="px-5 py-3.5">Agent</th>
-            <th className="px-4 py-3.5">Email</th>
-            <th className="px-4 py-3.5">Role</th>
-            <th className="px-4 py-3.5 text-right">Open deals</th>
-            <th className="px-4 py-3.5 text-right">Open MRR</th>
-            <th className="px-5 py-3.5 text-right">Created</th>
-          </tr>
-        </thead>
-        <tbody>
-          {agents.map((a) => (
-            <tr
-              key={a.id}
-              className="border-b border-white/[0.04] text-[13px] transition-colors last:border-b-0 hover:bg-white/[0.02]"
-            >
-              <td className="px-5 py-3.5">
-                <span className="flex items-center gap-3">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500/70 to-blue-500/40 text-[11px] font-semibold text-white ring-1 ring-white/15">
-                    {a.name
-                      .split(" ")
-                      .map((p) => p[0])
-                      .slice(0, 2)
-                      .join("")
-                      .toUpperCase()}
-                  </span>
-                  <span className="font-medium text-fg">{a.name}</span>
-                </span>
-              </td>
-              <td className="px-4 py-3.5 text-muted">{a.email}</td>
-              <td className="px-4 py-3.5">
-                <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] font-medium text-white/60 ring-1 ring-inset ring-white/[0.08]">
-                  {a.role === "agent" ? "Agent" : a.role}
-                </span>
-              </td>
-              <td className="px-4 py-3.5 text-right tabular-nums text-fg">{a.openDeals}</td>
-              <td className="px-4 py-3.5 text-right tabular-nums text-fg">
-                {formatUSD(a.openMrr)}
-                <span className="ml-0.5 text-[11px] font-medium text-white/35">/mo</span>
-              </td>
-              <td className="px-5 py-3.5 text-right text-white/40 tabular-nums">
-                {formatDate(a.created_at)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {agents.map((a) => (
+        <AgentCard key={a.id} agent={a} onEdit={onEdit} />
+      ))}
     </div>
   );
 }
@@ -345,6 +723,9 @@ function RosterTable({ agents, loading }: { agents: AgentInfo[] | null; loading:
 function AgentsAdmin() {
   const [agents, setAgents] = useState<AgentInfo[] | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [editing, setEditing] = useState<AgentInfo | null>(null);
+
   const load = useCallback(async () => {
     try {
       const res = await listAgents();
@@ -362,7 +743,6 @@ function AgentsAdmin() {
   useEffect(() => {
     void load();
   }, [load]);
-  const createdRef = useRef(false);
 
   return (
     <div className="rise-in">
@@ -391,13 +771,26 @@ function AgentsAdmin() {
             Add an agent to the team
           </h2>
         </div>
-        <CreateAgentForm
-          onCreated={() => {
-            createdRef.current = true;
-            void load();
-          }}
-        />
+        <CreateAgentForm agents={agents} onCreated={() => void load()} />
       </div>
+
+      {/* Page-level notice (e.g. edit feedback) */}
+      {notice ? (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.07] px-4 py-3">
+          <p role="status" className="flex items-center gap-2 text-[13px] leading-relaxed text-emerald-300">
+            <span className="shrink-0">{Icons.check}</span>
+            {notice}
+          </p>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss"
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-white/35 transition-colors hover:bg-white/[0.06] hover:text-white/80"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
 
       {/* Roster */}
       <div className="mb-4 flex items-center justify-between gap-3">
@@ -418,8 +811,30 @@ function AgentsAdmin() {
           </button>
         </div>
       ) : (
-        <RosterTable agents={agents} loading={status === "loading"} />
+        <RosterCards
+          agents={agents}
+          loading={status === "loading"}
+          onEdit={(a) => {
+            setNotice(null);
+            setEditing(a);
+          }}
+        />
       )}
+
+      {/* Edit modal */}
+      {editing ? (
+        <EditAgentModal
+          agent={editing}
+          agents={agents ?? []}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            const name = editing.name;
+            setEditing(null);
+            setNotice(`${name} updated.`);
+            void load();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
