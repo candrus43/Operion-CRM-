@@ -264,6 +264,31 @@ export async function runDynamicQuery(
   const rows = await db(template, ...args);
   return rows as Record<string, unknown>[];
 }
+/**
+ * Writes one row to the deal activity timeline and bumps the deal's
+ * `last_activity_at` so the board's "last activity" chip stays in sync.
+ * Non-fatal by design (mirrors markWon): the underlying deal mutation has
+ * already succeeded, so a failed activity insert must never fail that call.
+ */
+async function recordActivity(
+  db: ReturnType<typeof sql>,
+  dealId: string,
+  type: string,
+  summary: string,
+  authorId: string | null,
+): Promise<void> {
+  try {
+    await db`
+      insert into activities (deal_id, type, summary, author_id)
+      values (${dealId}, ${type}, ${summary}, ${authorId})
+    `;
+    await db`
+      update deals set last_activity_at = now(), updated_at = now() where id = ${dealId}
+    `;
+  } catch (err) {
+    console.error("[operion-crm] activity insert failed (non-fatal):", err);
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* Server functions                                                    */
@@ -414,6 +439,8 @@ export const createDeal = createServerFn({ method: "POST" })
         )
         returning id
       `;
+      // First row on the timeline — every deal starts with its creation event.
+      await recordActivity(db, String(rows[0].id), "created", "Deal created", user.id);
       return { ok: true, dealId: String(rows[0].id) };
     } catch (err) {
       console.error("[operion-crm] createDeal failed:", err);
@@ -463,6 +490,47 @@ export const updateDeal = createServerFn({ method: "POST" })
       if (data.nextStep !== undefined) push("next_step", data.nextStep?.trim() || null);
       if (data.notes !== undefined) push("notes", data.notes?.trim() || null);
       if (sets.length === 0) return { ok: true };
+      // Timeline diff — compare each submitted field against the pre-update
+      // row so an unchanged field (the edit form always posts every field)
+      // never produces a spurious activity row. Values are derived from the
+      // plan in code, so a plan change is the only pricing edit to log.
+      const s = (v: unknown) => (v == null ? null : String(v));
+      const changes: { type: string; summary: string }[] = [];
+      if (data.stage !== undefined && data.stage !== String(owned.stage)) {
+        changes.push({ type: "stage", summary: `Stage changed to ${data.stage}` });
+      }
+      if (data.plan !== undefined && data.plan !== String(owned.plan)) {
+        changes.push({ type: "plan", summary: `Plan changed to ${data.plan}` });
+      }
+      const contactChanged =
+        (data.contactId !== undefined && s(data.contactId) !== s(owned.contact_id)) ||
+        (data.contactName !== undefined &&
+          s(data.contactName.trim() || null) !== s(owned.contact_name)) ||
+        (data.contactEmail !== undefined &&
+          s(data.contactEmail.trim() || null) !== s(owned.contact_email)) ||
+        (data.contactPhone !== undefined &&
+          s(data.contactPhone.trim() || null) !== s(owned.contact_phone));
+      if (contactChanged) changes.push({ type: "contact", summary: "Contact updated" });
+      if (data.company !== undefined && data.company.trim() !== String(owned.company)) {
+        changes.push({ type: "edit", summary: `Company renamed to ${data.company.trim()}` });
+      }
+      if (data.nextStep !== undefined && s(data.nextStep.trim() || null) !== s(owned.next_step)) {
+        changes.push({ type: "edit", summary: "Next step updated" });
+      }
+      if (data.notes !== undefined && s(data.notes.trim() || null) !== s(owned.notes)) {
+        changes.push({ type: "edit", summary: "Notes updated" });
+      }
+      if (user.role === "owner" && data.ownerId !== undefined && s(data.ownerId) !== s(owned.owner_id)) {
+        // Match reassignDeal's phrasing when we can resolve the new owner's name.
+        const uRows = data.ownerId
+          ? await db`select name from users where id = ${data.ownerId} limit 1`
+          : [];
+        const name = uRows.length > 0 && uRows[0].name != null ? String(uRows[0].name) : null;
+        changes.push({
+          type: "note",
+          summary: name ? `Assigned to ${name}` : "Deal reassigned",
+        });
+      }
 
       sets.push(`updated_at = $${args.length + 1}`);
       args.push(new Date());
@@ -477,6 +545,10 @@ export const updateDeal = createServerFn({ method: "POST" })
         await fireDealClosedWebhook({
           ...dealClosedPayload(data.dealId, data.stage, owned),
         });
+      }
+      // One timeline row per detected change (stage, plan, contact, details).
+      for (const c of changes) {
+        await recordActivity(db, data.dealId, c.type, c.summary, user.id);
       }
       return { ok: true };
     } catch (err) {
@@ -515,6 +587,12 @@ export const moveDealStage = createServerFn({ method: "POST" })
         await fireDealClosedWebhook({
           ...dealClosedPayload(data.dealId, data.stage, owned),
         });
+      }
+      // Timeline row for the stage move (drag-and-drop and the drawer's
+      // "Move to stage" select both land here). Same-stage no-ops are guarded
+      // in the UI, but double-check server-side so re-drops log nothing.
+      if (data.stage !== String(owned.stage)) {
+        await recordActivity(db, data.dealId, "stage", `Stage changed to ${data.stage}`, user.id);
       }
       return { ok: true };
     } catch (err) {
