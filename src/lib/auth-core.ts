@@ -28,7 +28,7 @@ const SESSION_TTL_S = 30 * 24 * 60 * 60;
 /** Seed credential — created once, on first schema init (see `seedIfNeeded`).
  *  The owner account is the ONLY seeded account; the CRM starts with empty
  *  deals/contacts tables and no agents (agents are added later via the admin). */
-const SEED_OWNER_EMAIL = "owner@operioncrm.com";
+const SEED_OWNER_EMAIL = "christopher@operion.online";
 /** Randomly generated throwaway password (override via env before first seed). */
 const SEED_OWNER_PASSWORD = process.env.SEED_OWNER_PASSWORD ?? "cl4P84S384Yi9XLE";
 
