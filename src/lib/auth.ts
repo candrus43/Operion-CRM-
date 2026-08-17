@@ -63,7 +63,7 @@ export const login = createServerFn({ method: "POST" }).handler(
 
 export const logout = createServerFn({ method: "POST" }).handler(async () => {
   await logoutCore();
-  deleteCookie("operion_crm_session", { path: "/" });
+  deleteCookie("ocrm_session", { path: "/" });
   return { ok: true };
 });
 

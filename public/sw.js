@@ -16,8 +16,8 @@
  *                       are never cached or intercepted.
  */
 const CACHE_PREFIX = "operion-crm";
-const ASSET_CACHE = `${CACHE_PREFIX}-assets-v1`;
-const OFFLINE_CACHE = `${CACHE_PREFIX}-offline-v1`;
+const ASSET_CACHE = `${CACHE_PREFIX}-assets-v2`;
+const OFFLINE_CACHE = `${CACHE_PREFIX}-offline-v2`;
 const OFFLINE_URL = "/offline.html";
 
 self.addEventListener("install", (event) => {

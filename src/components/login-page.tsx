@@ -49,7 +49,7 @@ export default function LoginPage() {
         // subsequent getSession calls authenticate on every host. The cookie
         // stays non-httpOnly; acceptable for this internal tool.
         try {
-          document.cookie = `operion_crm_session=${result.token}; path=/; max-age=${30 * 24 * 60 * 60}; SameSite=Lax; ${location.protocol === "https:" ? "Secure; " : ""}`;
+          document.cookie = `ocrm_session=${result.token}; path=/; max-age=${30 * 24 * 60 * 60}; SameSite=Lax; ${location.protocol === "https:" ? "Secure; " : ""}`;
         } catch {
           /* server-side Set-Cookie still covers hosts where it works */
         }

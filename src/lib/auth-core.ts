@@ -21,7 +21,7 @@ export interface SessionUser {
   role: Role;
 }
 
-export const SESSION_COOKIE = "operion_crm_session";
+export const SESSION_COOKIE = "ocrm_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const SESSION_TTL_S = 30 * 24 * 60 * 60;
 
