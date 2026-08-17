@@ -18,8 +18,12 @@
   if (window.matchMedia("(display-mode: standalone)").matches) return;
 
   function register() {
+    // Versioned registration URL: every publish bumps SW_URL so the browser is
+    // forced to fetch and install the new service worker immediately (no
+    // waiting on the old one's lifecycle), killing any stale asset caches.
+    var SW_URL = "/sw.js?v=3";
     navigator.serviceWorker
-      .register("/sw.js", { scope: "/" })
+      .register(SW_URL, { scope: "/" })
       .catch(function (err) {
         console.warn("[operion-crm] service worker registration failed:", err);
       });
