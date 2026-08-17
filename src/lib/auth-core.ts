@@ -321,6 +321,7 @@ export async function readSession(): Promise<SessionUser | null> {
 
 export interface LoginCoreResult {
   ok: boolean;
+  token?: string;
   user?: SessionUser;
   error?: string;
 }
@@ -462,6 +463,7 @@ export async function loginCore(emailInput: string, passwordInput: string): Prom
 
   return {
     ok: true,
+    token,
     user: { id: String(user.id), name: String(user.name), email: String(user.email), role: user.role as Role },
   };
 }

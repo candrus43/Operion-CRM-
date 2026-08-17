@@ -47,7 +47,7 @@ export const ensureSchema = createServerFn({ method: "GET" }).handler(async () =
 });
 
 type LoginResult =
-  | { ok: true; user: SessionUser }
+  | { ok: true; token: string; user: SessionUser }
   | { ok: false; error: string };
 
 export const login = createServerFn({ method: "POST" }).handler(

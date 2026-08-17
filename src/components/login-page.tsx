@@ -43,6 +43,16 @@ export default function LoginPage() {
     try {
       const result = await login({ data: { email, password } });
       if (result.ok) {
+        // Some hosting edges strip Set-Cookie from server-function responses,
+        // so ALSO persist the session token client-side — the server-side
+        // Set-Cookie (where delivered) and this write are the same token, so
+        // subsequent getSession calls authenticate on every host. The cookie
+        // stays non-httpOnly; acceptable for this internal tool.
+        try {
+          document.cookie = `operion_crm_session=${result.token}; path=/; max-age=${30 * 24 * 60 * 60}; SameSite=Lax; ${location.protocol === "https:" ? "Secure; " : ""}`;
+        } catch {
+          /* server-side Set-Cookie still covers hosts where it works */
+        }
         // Session cookie is already set (see header comment) — swap to the
         // workspace without a full document load. Wait one frame so the
         // "Preparing your workspace…" state paints before the route changes.
