@@ -100,6 +100,54 @@ export interface Activity {
   created_at: string;
 }
 
+/**
+ * One auto-logged mutation on the deal timeline (`deal_activities` table).
+ * System-written — unlike the manual `Activity` rows (call/email/meeting/note)
+ * there is no free-text summary; the human-readable line is derived from
+ * `type` + `detail` (old→new values, e.g. {"from":"Lead","to":"Meeting"}).
+ */
+export interface DealActivity {
+  id: string;
+  deal_id: string;
+  type: string;
+  detail: DealActivityDetail;
+  actor_name: string | null;
+  actor_id: string | null;
+  created_at: string;
+}
+
+/**
+ * old→new values carried by a timeline row — keys vary per type:
+ * stage_changed/plan_changed → from/to; owner_changed → from/to + names;
+ * contact_linked/unlinked → from/to (+names); won → from/to + customerEmail;
+ * deal_updated → field (+from/to); created → stage/plan.
+ */
+export interface DealActivityDetail {
+  from?: string | null;
+  to?: string | null;
+  fromName?: string | null;
+  toName?: string | null;
+  field?: string | null;
+  stage?: string | null;
+  plan?: string | null;
+  customerEmail?: string | null;
+}
+
+/** Deal timeline event vocabulary (see recordDealActivity call sites). */
+export const DEAL_ACTIVITY_TYPES = [
+  "created",
+  "stage_changed",
+  "plan_changed",
+  "owner_changed",
+  "note_added",
+  "contact_linked",
+  "contact_unlinked",
+  "won",
+  "lost",
+  "deal_updated",
+] as const;
+export type DealActivityType = (typeof DEAL_ACTIVITY_TYPES)[number];
+
 export interface DealFilters {
   agentId: string | null;
   stage: Stage | null;
@@ -294,6 +342,64 @@ async function recordActivity(
   }
 }
 
+/**
+ * Writes one row to the deal_activities timeline (auto-logged deal mutations)
+ * and bumps the deal's `last_activity_at` so the board chip stays in sync.
+ * `detail` is stored as jsonb — old→new values, e.g. {from:"Lead",to:"Meeting"}.
+ * Non-fatal by design (mirrors recordActivity): the underlying deal mutation
+ * has already succeeded, so a failed timeline insert must never fail that call.
+ */
+async function recordDealActivity(
+  db: ReturnType<typeof sql>,
+  dealId: string,
+  type: DealActivityType,
+  detail: Record<string, unknown>,
+  actorId: string | null,
+): Promise<void> {
+  try {
+    await db`
+      insert into deal_activities (deal_id, actor_id, type, detail)
+      values (${dealId}, ${actorId}, ${type}, ${JSON.stringify(detail)})
+    `;
+    await db`
+      update deals set last_activity_at = now(), updated_at = now() where id = ${dealId}
+    `;
+  } catch (err) {
+    console.error("[operion-crm] deal_activities insert failed (non-fatal):", err);
+  }
+}
+
+/**
+ * Shared by `~/lib/agents` (reassignDeal) so owner reassignments land on the
+ * deal_activities timeline with the same old→new detail shape.
+ */
+export { recordDealActivity };
+
+/** Fetches a deal's timeline rows, newest first, with the actor name joined. */
+async function fetchDealActivities(
+  db: ReturnType<typeof sql>,
+  dealId: string,
+): Promise<DealActivity[]> {
+  const rows = await db`
+    select a.id, a.deal_id, a.type, a.detail, a.actor_id, u.name as actor_name, a.created_at
+    from deal_activities a left join users u on u.id = a.actor_id
+    where a.deal_id = ${dealId}
+    order by a.created_at desc
+  `;
+  return rows.map((a) => ({
+    id: String(a.id),
+    deal_id: String(a.deal_id),
+    type: String(a.type),
+    detail:
+      a.detail != null && typeof a.detail === "object"
+        ? (a.detail as unknown as DealActivityDetail)
+        : {},
+    actor_name: a.actor_name == null ? null : String(a.actor_name),
+    actor_id: a.actor_id == null ? null : String(a.actor_id),
+    created_at: new Date(a.created_at as Date).toISOString(),
+  }));
+}
+
 /* ------------------------------------------------------------------ */
 /* Server functions                                                    */
 /* ------------------------------------------------------------------ */
@@ -354,7 +460,7 @@ export const listDeals = createServerFn({ method: "POST" })
   });
 
 export type DealDetailResult =
-  | { ok: true; deal: Deal; activities: Activity[]; contact: LinkedContact | null }
+  | { ok: true; deal: Deal; activities: Activity[]; timeline: DealActivity[]; contact: LinkedContact | null }
   | { ok: false; reason: DbStatus };
 
 /** Full deal + read-only activity timeline (agents can only open their own deals). */
@@ -406,9 +512,33 @@ export const getDealDetail = createServerFn({ method: "POST" })
           author_name: a.author_name == null ? null : String(a.author_name),
           created_at: new Date(a.created_at as Date).toISOString(),
         })),
+        timeline: await fetchDealActivities(db, data.dealId),
       };
     } catch (err) {
       console.error("[operion-crm] getDealDetail failed:", err);
+      return { ok: false, reason: "db-error" };
+    }
+  });
+
+export type DealActivitiesResult =
+  | { ok: true; timeline: DealActivity[] }
+  | { ok: false; reason: DbStatus };
+
+/** Fetch a deal's auto-logged mutation timeline, newest first. Ownership-scoped
+ *  (agents only their own deals) — same guard as every other deal read. */
+export const listDealActivities = createServerFn({ method: "POST" })
+  .validator((d: { dealId: string }) => d)
+  .handler(async ({ data }): Promise<DealActivitiesResult> => {
+    if (!process.env.DATABASE_URL) return { ok: false, reason: "db-not-connected" };
+    try {
+      const user = await readSession();
+      if (!user) return { ok: false, reason: "not-signed-in" };
+      const db = sql();
+      const owned = await fetchOwnedDeal(db, user, data.dealId);
+      if (!owned) return { ok: false, reason: "forbidden" };
+      return { ok: true, timeline: await fetchDealActivities(db, data.dealId) };
+    } catch (err) {
+      console.error("[operion-crm] listDealActivities failed:", err);
       return { ok: false, reason: "db-error" };
     }
   });
@@ -445,6 +575,13 @@ export const createDeal = createServerFn({ method: "POST" })
       `;
       // First row on the timeline — every deal starts with its creation event.
       await recordActivity(db, String(rows[0].id), "created", "Deal created", user.id);
+      await recordDealActivity(
+        db,
+        String(rows[0].id),
+        "created",
+        { stage: data.stage, plan },
+        user.id,
+      );
       return { ok: true, dealId: String(rows[0].id) };
     } catch (err) {
       console.error("[operion-crm] createDeal failed:", err);
@@ -499,30 +636,79 @@ export const updateDeal = createServerFn({ method: "POST" })
       // never produces a spurious activity row. Values are derived from the
       // plan in code, so a plan change is the only pricing edit to log.
       const s = (v: unknown) => (v == null ? null : String(v));
-      const changes: { type: string; summary: string }[] = [];
+      const changes: { type: DealActivityType; summary: string; detail: Record<string, unknown> }[] = [];
       if (data.stage !== undefined && data.stage !== String(owned.stage)) {
-        changes.push({ type: "stage", summary: `Stage changed to ${data.stage}` });
+        changes.push({
+          // Only markWon logs 'won' (it is the only path with the Operion
+          // handoff); an edit that lands on Closed Won is just a stage move.
+          type: data.stage === "Closed Lost" ? "lost" : "stage_changed",
+          summary: `Stage changed to ${data.stage}`,
+          detail: { from: String(owned.stage), to: data.stage },
+        });
       }
       if (data.plan !== undefined && data.plan !== String(owned.plan)) {
-        changes.push({ type: "plan", summary: `Plan changed to ${data.plan}` });
+        changes.push({
+          type: "plan_changed",
+          summary: `Plan changed to ${data.plan}`,
+          detail: { from: String(owned.plan), to: data.plan },
+        });
       }
-      const contactChanged =
-        (data.contactId !== undefined && s(data.contactId) !== s(owned.contact_id)) ||
+      const contactIdChanged =
+        data.contactId !== undefined && s(data.contactId) !== s(owned.contact_id);
+      const contactSnapshotChanged =
         (data.contactName !== undefined &&
-          s(data.contactName.trim() || null) !== s(owned.contact_name)) ||
+          s(data.contactName?.trim() ?? null) !== s(owned.contact_name)) ||
         (data.contactEmail !== undefined &&
-          s(data.contactEmail.trim() || null) !== s(owned.contact_email)) ||
+          s(data.contactEmail?.trim() ?? null) !== s(owned.contact_email)) ||
         (data.contactPhone !== undefined &&
-          s(data.contactPhone.trim() || null) !== s(owned.contact_phone));
-      if (contactChanged) changes.push({ type: "contact", summary: "Contact updated" });
+          s(data.contactPhone?.trim() ?? null) !== s(owned.contact_phone));
+      if (contactIdChanged) {
+        const to = data.contactId || null;
+        changes.push({
+          type: to ? "contact_linked" : "contact_unlinked",
+          summary: to ? "Contact linked" : "Contact unlinked",
+          detail: {
+            from: owned.contact_id == null ? null : String(owned.contact_id),
+            to: to == null ? null : String(to),
+            fromName: owned.contact_name == null ? null : String(owned.contact_name),
+            toName: data.contactName?.trim() || null,
+          },
+        });
+      } else if (contactSnapshotChanged) {
+        changes.push({
+          type: "deal_updated",
+          summary: "Contact details updated",
+          detail: {
+            field: "contact",
+            from: s(owned.contact_name),
+            to: data.contactName?.trim() || null,
+          },
+        });
+      }
       if (data.company !== undefined && data.company.trim() !== String(owned.company)) {
-        changes.push({ type: "edit", summary: `Company renamed to ${data.company.trim()}` });
+        changes.push({
+          type: "deal_updated",
+          summary: `Company renamed to ${data.company.trim()}`,
+          detail: { field: "company", from: String(owned.company), to: data.company.trim() },
+        });
       }
-      if (data.nextStep !== undefined && s(data.nextStep.trim() || null) !== s(owned.next_step)) {
-        changes.push({ type: "edit", summary: "Next step updated" });
+      if (data.nextStep !== undefined && s(data.nextStep?.trim() ?? null) !== s(owned.next_step)) {
+        changes.push({
+          type: "deal_updated",
+          summary: "Next step updated",
+          detail: {
+            field: "next_step",
+            from: s(owned.next_step),
+            to: data.nextStep?.trim() || null,
+          },
+        });
       }
-      if (data.notes !== undefined && s(data.notes.trim() || null) !== s(owned.notes)) {
-        changes.push({ type: "edit", summary: "Notes updated" });
+      if (data.notes !== undefined && s(data.notes?.trim() ?? null) !== s(owned.notes)) {
+        changes.push({
+          type: "note_added",
+          summary: "Notes updated",
+          detail: { from: s(owned.notes), to: data.notes?.trim() || null },
+        });
       }
       if (user.role === "owner" && data.ownerId !== undefined && s(data.ownerId) !== s(owned.owner_id)) {
         // Match reassignDeal's phrasing when we can resolve the new owner's name.
@@ -530,17 +716,28 @@ export const updateDeal = createServerFn({ method: "POST" })
           ? await db`select name from users where id = ${data.ownerId} limit 1`
           : [];
         const name = uRows.length > 0 && uRows[0].name != null ? String(uRows[0].name) : null;
+        const oldRows = owned.owner_id
+          ? await db`select name from users where id = ${owned.owner_id} limit 1`
+          : [];
+        const oldName =
+          oldRows.length > 0 && oldRows[0].name != null ? String(oldRows[0].name) : null;
         changes.push({
-          type: "assignment",
+          type: "owner_changed",
           summary: name ? `Assigned to ${name}` : "Deal reassigned",
+          detail: {
+            from: owned.owner_id == null ? null : String(owned.owner_id),
+            to: data.ownerId || null,
+            fromName: oldName,
+            toName: name,
+          },
         });
       }
 
-      sets.push(`updated_at = $${args.length + 1}`);
+      sets.push(`updated_at = ${args.length + 1}`);
       args.push(new Date());
       await runDynamicQuery(
         db,
-        `update deals set ${sets.join(", ")} where id = $${args.length + 1}`,
+        `update deals set ${sets.join(", ")} where id = ${args.length + 1}`,
         [...args, data.dealId],
       );
       // Editing a deal can also close it — notify Operion when the persisted
@@ -550,9 +747,12 @@ export const updateDeal = createServerFn({ method: "POST" })
           ...dealClosedPayload(data.dealId, data.stage, owned),
         });
       }
-      // One timeline row per detected change (stage, plan, contact, details).
+      // One timeline row per detected change (stage, plan, contact, details) —
+      // the summary rows keep the legacy `activities` feed intact, the typed
+      // rows feed the deal_activities timeline.
       for (const c of changes) {
         await recordActivity(db, data.dealId, c.type, c.summary, user.id);
+        await recordDealActivity(db, data.dealId, c.type, c.detail, user.id);
       }
       return { ok: true };
     } catch (err) {
@@ -595,8 +795,18 @@ export const moveDealStage = createServerFn({ method: "POST" })
       // Timeline row for the stage move (drag-and-drop and the drawer's
       // "Move to stage" select both land here). Same-stage no-ops are guarded
       // in the UI, but double-check server-side so re-drops log nothing.
+      // Only markWon logs 'won' (it is the only path with the Operion handoff);
+      // a drag onto Closed Won is just a stage move, a drag onto Closed Lost
+      // is a loss.
       if (data.stage !== String(owned.stage)) {
         await recordActivity(db, data.dealId, "stage", `Stage changed to ${data.stage}`, user.id);
+        await recordDealActivity(
+          db,
+          data.dealId,
+          data.stage === "Closed Lost" ? "lost" : "stage_changed",
+          { from: String(owned.stage), to: data.stage },
+          user.id,
+        );
       }
       return { ok: true };
     } catch (err) {
@@ -835,6 +1045,17 @@ export const markWon = createServerFn({ method: "POST" })
         ...dealClosedPayload(data.dealId, "Closed Won", row),
         customerEmail,
       });
+      // Timeline 'won' row — ONLY here, after Operion accepted the handoff and
+      // the deal persisted as Closed Won. Every failure path above returns
+      // before this line, so no activity can claim a win unless Operion
+      // accepted (the deal stays in Negotiation with no 'won' row).
+      await recordDealActivity(
+        db,
+        data.dealId,
+        "won",
+        { from: "Negotiation", to: "Closed Won", customerEmail },
+        user.id,
+      );
       try {
         await db`
           insert into activities (deal_id, type, summary, author_id)

@@ -84,7 +84,7 @@ function cookieOptions(expires: Date | null): Record<string, unknown> {
  * Existing databases are upgraded exactly once: the first run that sees a
  * stale/missing marker runs the full ensure and then writes the new version.
  */
-export const SCHEMA_VERSION = "5";
+export const SCHEMA_VERSION = "6";
 
 export const SCHEMA_SQL = `
   -- Schema version marker row (key = 'schema_version'). schemaIsCurrent reads
@@ -240,6 +240,34 @@ export const SCHEMA_SQL = `
   -- (companies.domain is already indexed by its UNIQUE constraint.)
   CREATE INDEX IF NOT EXISTS idx_contacts_company_id ON contacts (company_id);
   CREATE INDEX IF NOT EXISTS idx_contacts_email_lower ON contacts (lower(email));
+
+  -- v6: deal activity timeline — one row per auto-logged deal mutation
+  -- (created, stage_changed, plan_changed, owner_changed, note_added,
+  -- contact_linked/unlinked, won, lost, deal_updated). actor_id is the user
+  -- who performed the action (null for system/backfill rows); detail holds the
+  -- old→new values, e.g. {"from":"Lead","to":"Meeting"} for stage_changed.
+  CREATE TABLE IF NOT EXISTS deal_activities (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    deal_id uuid NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    actor_id uuid REFERENCES users(id) ON DELETE SET NULL,
+    type text NOT NULL,
+    detail jsonb NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_deal_activities_deal_created
+    ON deal_activities (deal_id, created_at DESC);
+
+  -- v6 backfill: every pre-existing deal gets its 'created' timeline entry
+  -- using deals.created_at as the timestamp (actor = the deal's owner).
+  -- Idempotent — only fills deals that have no 'created' row yet, so re-runs
+  -- and fresh databases are safe.
+  INSERT INTO deal_activities (deal_id, actor_id, type, detail, created_at)
+  SELECT d.id, d.owner_id, 'created', jsonb_build_object('stage', d.stage), d.created_at
+  FROM deals d
+  WHERE NOT EXISTS (
+    SELECT 1 FROM deal_activities a WHERE a.deal_id = d.id AND a.type = 'created'
+  );
 
   -- AI morning briefing - one generated summary per user per day, cached here
   -- so OpenAI is called at most once per user per day (see src/lib/briefing.ts).
