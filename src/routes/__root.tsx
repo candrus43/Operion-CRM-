@@ -72,6 +72,11 @@ function RootDocument({ children }: { children: ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var b="9ca1bdf",k="__ocrm_build";if(sessionStorage.getItem(k)&&sessionStorage.getItem(k)!==b){sessionStorage.setItem(k,b);location.reload();}sessionStorage.setItem(k,b);}catch(e){}})();`,
+          }}
+        />
       </head>
       <body>
         {children}
