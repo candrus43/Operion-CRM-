@@ -532,7 +532,7 @@ export const updateDeal = createServerFn({ method: "POST" })
         });
       }
 
-      sets.push(`updated_at = ${args.length + 1}`);
+      sets.push(`updated_at = $${args.length + 1}`);
       args.push(new Date());
       await runDynamicQuery(
         db,
