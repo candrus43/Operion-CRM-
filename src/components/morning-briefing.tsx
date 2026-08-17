@@ -8,7 +8,7 @@
  * failure hides the panel entirely — it must never error or crash the board.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { formatUsd, getBriefing } from "~/lib/briefing";
+import { formatUsd, getBriefing, sanitizeBriefingText } from "~/lib/briefing";
 
 /* ------------------------------------------------------------------ */
 /* Tiny renderer for the briefing text (## headers + - bullets)        */
@@ -17,7 +17,11 @@ import { formatUsd, getBriefing } from "~/lib/briefing";
 function renderBriefingText(content: string): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   let key = 0;
-  for (const raw of content.split("\n")) {
+  // Last-resort fallback on the read path: strip any leftover markdown
+  // artifacts (e.g. rows cached before write-path sanitization existed) so
+  // raw ** or ``` can never be shown to the user.
+  const safe = sanitizeBriefingText(content);
+  for (const raw of safe.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
     const header = line.match(/^#{1,3}\s+(.+)$/) ?? line.match(/^\*\*(.+)\*\*$/);

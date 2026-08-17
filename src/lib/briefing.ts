@@ -483,6 +483,48 @@ export function buildFallbackContent(ctx: BriefingContext, now: Date = new Date(
 }
 
 /* ------------------------------------------------------------------ */
+/* Briefing text sanitization (write path + renderer fallback)         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Sanitize briefing text before it is cached or rendered. The OpenAI prompt
+ * asks for plain text, but the model occasionally still emits markdown
+ * artifacts (inline **bold**, _italic_, *, backticks, numbered-list "1."
+ * markers, stray "|" table lines, runs of blank lines). This strips them with
+ * plain string handling — no markdown conversion, no dependencies.
+ *
+ * Preserved on purpose: "##" section headers and "- " bullets — the briefing
+ * renderer depends on both to lay out the card.
+ */
+export function sanitizeBriefingText(content: string): string {
+  const out: string[] = [];
+  for (const raw of content.split("\n")) {
+    let line = raw.replace(/\s+$/, "");
+    // Stray markdown table rows / separators ("| a | b |", "|---|---|").
+    const pipeCount = (line.match(/\|/g) ?? []).length;
+    if (/^\s*\|/.test(line) || pipeCount >= 2 || /^[\s|:—-]+$/.test(line)) continue;
+    // Numbered-list markers ("1." / "1)") — drop the marker, keep the text.
+    line = line.replace(/^\s*\d+[.)]\s+/, "");
+    // Whole-line "**Header**" was historically rendered as a section header —
+    // normalize it to "## Header" so sanitizing doesn't demote it to a paragraph.
+    if (/^\*\*(.+)\*\*$/.test(line.trim())) line = `## ${line.trim().slice(2, -2)}`;
+    // Inline markers: ***bold italic***, **bold**, __bold__, *italic*,
+    // _italic_, `code` — then any stray markers left over.
+    line = line
+      .replace(/\*\*\*([^*]+)\*\*\*/g, "$1")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/__([^_]+)__/g, "$1")
+      .replace(/(^|[^*\s])\*([^*\n]+)\*/g, "$1$2")
+      .replace(/(^|[^_\s])_([^_\n]+)_/g, "$1$2")
+      .replace(/`([^`\n]+)`/g, "$1")
+      .replace(/[*_`]+/g, "");
+    out.push(line);
+  }
+  // Collapse 3+ consecutive blank lines to one; trim leading/trailing blanks.
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/* ------------------------------------------------------------------ */
 /* OpenAI (server-only)                                                */
 /* ------------------------------------------------------------------ */
 
@@ -634,6 +676,11 @@ export const getBriefing = createServerFn({ method: "GET" }).handler(
           );
         }
       }
+
+      // Write-path sanitization — the cached row (and the returned content)
+      // must never store raw markdown. The renderer also re-sanitizes on read
+      // as a last-resort fallback for rows cached before this change.
+      content = sanitizeBriefingText(content);
 
       await db`
         insert into briefings (user_id, briefing_date, content, ai_generated)
