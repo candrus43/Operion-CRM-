@@ -74,7 +74,7 @@ function RootDocument({ children }: { children: ReactNode }) {
         <HeadContent />
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var b="9ca1bdf",k="__ocrm_build";if(sessionStorage.getItem(k)&&sessionStorage.getItem(k)!==b){sessionStorage.setItem(k,b);location.reload();}sessionStorage.setItem(k,b);}catch(e){}})();`,
+            __html: `(function(){try{var b="ef999c9",k="__ocrm_build";if(sessionStorage.getItem(k)&&sessionStorage.getItem(k)!==b){sessionStorage.setItem(k,b);location.reload();}sessionStorage.setItem(k,b);}catch(e){}})();`,
           }}
         />
       </head>

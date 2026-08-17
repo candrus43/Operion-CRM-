@@ -17,6 +17,7 @@ import {
   type Activity,
   type ActivityType,
   type Deal,
+  type DealActivity,
   type DbStatus,
   type DealInput,
   type LinkedContact,
@@ -959,6 +960,80 @@ const ACTIVITY_META: Record<string, { icon: React.ReactNode; label: string; tone
   edit: { icon: Icons.edit, label: "Edit", tone: "text-white/60" },
 };
 
+/** Absolute timestamp for the timeline entries' hover/title tooltip. */
+function formatFullDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "";
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** Icon + tone per deal_activities timeline type (falls back to a neutral arrow). */
+const TIMELINE_META: Record<string, { icon: React.ReactNode; tone: string }> = {
+  created: { icon: Icons.plus, tone: "text-emerald-300" },
+  stage_changed: { icon: Icons.arrow, tone: "text-violet-300" },
+  plan_changed: { icon: Icons.calendar, tone: "text-indigo-300" },
+  owner_changed: { icon: Icons.swap, tone: "text-violet-300" },
+  note_added: { icon: Icons.note, tone: "text-amber-300" },
+  contact_linked: { icon: Icons.users, tone: "text-cyan-300" },
+  contact_unlinked: { icon: Icons.users, tone: "text-rose-300" },
+  won: { icon: Icons.check, tone: "text-emerald-300" },
+  lost: { icon: Icons.close, tone: "text-rose-300" },
+  deal_updated: { icon: Icons.edit, tone: "text-white/60" },
+};
+
+function cleanName(v: unknown): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s || null;
+}
+
+/** Human-readable action line for a timeline entry, derived from type + detail. */
+function timelineAction(a: DealActivity): string {
+  const d = a.detail ?? {};
+  const from = cleanName(d.from);
+  const to = cleanName(d.to);
+  switch (a.type) {
+    case "created":
+      return "Created deal";
+    case "stage_changed":
+      return from && to ? `Stage changed: ${from} → ${to}` : `Stage changed to ${to ?? "—"}`;
+    case "plan_changed":
+      return from && to ? `Plan changed: ${from} → ${to}` : `Plan changed to ${to ?? "—"}`;
+    case "owner_changed": {
+      const fromName = cleanName(d.fromName) ?? from ?? "Unassigned";
+      const toName = cleanName(d.toName) ?? to ?? "Unassigned";
+      return `Owner changed: ${fromName} → ${toName}`;
+    }
+    case "note_added":
+      return "Note added";
+    case "contact_linked": {
+      const name = cleanName(d.toName) ?? cleanName(d.to);
+      return name ? `Contact linked: ${name}` : "Contact linked";
+    }
+    case "contact_unlinked":
+      return "Contact unlinked";
+    case "won":
+      return "Marked Won";
+    case "lost":
+      return "Marked Lost";
+    case "deal_updated": {
+      const field = cleanName(d.field);
+      if (field === "company") return to ? `Company renamed to ${to}` : "Company updated";
+      if (field === "next_step") return "Next step updated";
+      return "Deal updated";
+    }
+    default:
+      return a.type.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+  }
+}
+
 function DealDetailDrawer({
   dealId,
   me,
@@ -983,6 +1058,7 @@ function DealDetailDrawer({
         status: "ready";
         deal: Deal;
         activities: Activity[];
+        timeline: DealActivity[];
         contact: LinkedContact | null;
       }
   >({ status: "loading" });
@@ -1021,6 +1097,7 @@ function DealDetailDrawer({
         status: "ready",
         deal: res.deal,
         activities: res.activities,
+        timeline: res.timeline,
         contact: res.contact,
       });
     });
@@ -1036,7 +1113,13 @@ function DealDetailDrawer({
     if (!res.ok) return;
     setState((s) =>
       s.status === "ready"
-        ? { status: "ready", deal: res.deal, activities: res.activities, contact: res.contact }
+        ? {
+            status: "ready",
+            deal: res.deal,
+            activities: res.activities,
+            timeline: res.timeline,
+            contact: res.contact,
+          }
         : s,
     );
   }
@@ -1707,6 +1790,54 @@ function DealDetailDrawer({
                     );
                   })
                 )}
+              </div>
+
+              {/* Timeline — auto-logged deal history (created, stage/plan/owner
+                  changes, notes, contact links, won/lost), newest first */}
+              <div className="mt-6">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/35">
+                    Timeline
+                  </p>
+                  <span className="text-[11px] text-white/25">Deal history</span>
+                </div>
+                <div className="mt-3 space-y-2.5 pb-4">
+                  {state.timeline.length === 0 ? (
+                    <div className="glass flex min-h-[96px] flex-col items-center justify-center rounded-2xl border border-dashed border-white/[0.08] px-4 py-6 text-center">
+                      <p className="text-[12px] text-white/30">No activity yet</p>
+                    </div>
+                  ) : (
+                    state.timeline.map((a) => {
+                      const meta = TIMELINE_META[a.type] ?? {
+                        icon: Icons.arrow,
+                        tone: "text-white/50",
+                      };
+                      return (
+                        <div key={a.id} className="glass flex items-start gap-3 rounded-2xl p-3.5">
+                          <div className="icon-tile-sm mt-0.5 shrink-0 text-white/40">
+                            {meta.icon}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-baseline justify-between gap-2">
+                              <p className={`text-[12px] font-medium ${meta.tone}`}>
+                                {timelineAction(a)}
+                              </p>
+                              <p
+                                className="shrink-0 text-[11px] text-white/30"
+                                title={formatFullDate(a.created_at)}
+                              >
+                                {relTime(a.created_at)}
+                              </p>
+                            </div>
+                            {a.actor_name ? (
+                              <p className="mt-1 text-[11px] text-white/35">{a.actor_name}</p>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               </div>
             </div>
           )}

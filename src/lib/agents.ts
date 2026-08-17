@@ -15,7 +15,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { sql } from "~/db";
 import { hashPassword, readSession } from "./auth-core";
 import type { DbStatus } from "./pipeline";
-import { runDynamicQuery } from "./pipeline";
+import { runDynamicQuery, recordDealActivity } from "./pipeline";
 import { PLAN_PRICING, commissionFor } from "./pricing";
 
 /** One roster row — a role='agent' user with their deal counts + open MRR. */
@@ -235,7 +235,7 @@ export const reassignDeal = createServerFn({ method: "POST" })
       if ("error" in guard) return guard.error;
 
       const db = sql();
-      const dealRows = await db`select id from deals where id = ${data.dealId} limit 1`;
+      const dealRows = await db`select id, owner_id from deals where id = ${data.dealId} limit 1`;
       if (dealRows.length === 0) {
         return { ok: false, reason: "not-found", message: "That deal no longer exists." };
       }
@@ -258,6 +258,20 @@ export const reassignDeal = createServerFn({ method: "POST" })
         // Non-fatal: the reassignment itself already succeeded.
         console.error("[operion-crm] reassignDeal: activity insert failed (non-fatal):", err);
       }
+      // Timeline row: owner_changed with the old→new owner ids (names resolved
+      // for the drawer's human-readable line). Non-fatal, mirrors the above.
+      await recordDealActivity(
+        db,
+        data.dealId,
+        "owner_changed",
+        {
+          from: dealRows[0].owner_id == null ? null : String(dealRows[0].owner_id),
+          to: data.newOwnerId,
+          fromName: null,
+          toName: String(userRows[0].name),
+        },
+        guard.user.id,
+      );
       return { ok: true, dealId: data.dealId, ownerId: data.newOwnerId };
     } catch (err) {
       console.error("[operion-crm] reassignDeal failed:", err);
