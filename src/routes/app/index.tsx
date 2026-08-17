@@ -25,7 +25,7 @@ import {
 } from "~/lib/pipeline";
 import { listContacts, type Contact } from "~/lib/contacts";
 import { reassignDeal } from "~/lib/agents";
-import { isDealStale } from "~/lib/briefing";
+import { isDealStale, staleDays } from "~/lib/briefing";
 import { MorningBriefing } from "~/components/morning-briefing";
 import {
   PLANS,
@@ -272,7 +272,7 @@ function DealCard({
 }) {
   const won = deal.stage === "Closed Won";
   const lost = deal.stage === "Closed Lost";
-  // Stale = open deal with no activity for STALE_DEAL_DAYS (7) — effective
+  // Stale = open deal with no activity for STALE_DEAL_DAYS (5) — effective
   // last touch falls back to created_at. Closed deals never wear the badge.
   const stale = isDealStale(deal);
   return (
@@ -302,11 +302,11 @@ function DealCard({
         <span className="flex shrink-0 items-center gap-1.5">
           {stale ? (
             <span
-              title="No activity for 7+ days"
+              title={`No activity for ${staleDays(deal)} days`}
               className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-amber-300 uppercase ring-1 ring-inset ring-amber-400/25"
             >
               <span aria-hidden="true" className="h-1 w-1 rounded-full bg-amber-400" />
-              Stale
+              Stale · {staleDays(deal)}d
             </span>
           ) : null}
           <PlanBadge plan={deal.plan} />

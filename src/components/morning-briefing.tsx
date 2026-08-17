@@ -8,7 +8,7 @@
  * failure hides the panel entirely — it must never error or crash the board.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getBriefing } from "~/lib/briefing";
+import { formatUsd, getBriefing } from "~/lib/briefing";
 
 /* ------------------------------------------------------------------ */
 /* Tiny renderer for the briefing text (## headers + - bullets)        */
@@ -68,6 +68,9 @@ type PanelState =
       staleCount: number;
       recentActivityCount: number;
       dealCount: number;
+      openDealCount: number;
+      totalPipelineMrr: number;
+      weightedPipelineMrr: number;
     }
   | { status: "hidden" };
 
@@ -154,6 +157,9 @@ export function MorningBriefing() {
         staleCount: res.staleCount,
         recentActivityCount: res.recentActivityCount,
         dealCount: res.dealCount,
+        openDealCount: res.openDealCount,
+        totalPipelineMrr: res.totalPipelineMrr,
+        weightedPipelineMrr: res.weightedPipelineMrr,
       });
     } catch {
       if (mountedRef.current) setState({ status: "hidden" });
@@ -249,7 +255,28 @@ export function MorningBriefing() {
         {/* Body */}
         {open ? (
           <div className="px-5 pb-5 sm:px-6">
-            <div className="hairline mb-4" />
+            {/* Live contract metrics — computed from the DB, never from the model */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-3 py-1 text-[11px] font-medium text-fg/90 ring-1 ring-inset ring-white/[0.08]">
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-accent-light" />
+                {state.openDealCount} open deal{state.openDealCount === 1 ? "" : "s"}
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-3 py-1 text-[11px] font-medium text-fg/90 ring-1 ring-inset ring-white/[0.08]">
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+                {formatUsd(state.totalPipelineMrr)} pipeline MRR
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-3 py-1 text-[11px] font-medium text-fg/90 ring-1 ring-inset ring-white/[0.08]">
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-violet-400" />
+                {formatUsd(state.weightedPipelineMrr)} weighted MRR
+              </span>
+              {state.staleCount > 0 ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/10 px-3 py-1 text-[11px] font-medium text-amber-300 ring-1 ring-inset ring-amber-400/20">
+                  <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                  {state.staleCount} stale deal{state.staleCount === 1 ? "" : "s"}
+                </span>
+              ) : null}
+            </div>
+            <div className="hairline mt-4 mb-4" />
             {state.aiGenerated ? null : (
               <p className="mb-3.5 inline-flex items-center gap-1.5 rounded-full bg-amber-400/10 px-3 py-1 text-[11px] font-medium text-amber-300 ring-1 ring-inset ring-amber-400/20">
                 <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-amber-400" />

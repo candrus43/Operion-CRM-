@@ -25,15 +25,20 @@
 import { createServerFn } from "@tanstack/react-start";
 import { sql } from "~/db";
 import { readSession } from "./auth-core";
-import { PLAN_PRICING, isPlan, type Plan } from "./pricing";
+import { PLAN_PRICING, STAGE_PROBABILITY, isPlan, type Plan } from "./pricing";
 import type { DbStatus } from "./pipeline";
 
 /* ------------------------------------------------------------------ */
 /* Constants (shared with the board)                                   */
 /* ------------------------------------------------------------------ */
 
-/** A deal is "stale" when its effective last touch is this old (days). */
-export const STALE_DEAL_DAYS = 7;
+/**
+ * A deal is "stale" when its effective last touch (last_activity_at, else
+ * created_at) is this old (days). Team decision: 5 days without activity on an
+ * open deal earns the amber "Stale" badge and a spot in the briefing's
+ * needs-attention list.
+ */
+export const STALE_DEAL_DAYS = 5;
 /** Proposal/Negotiation deals that haven't moved in this many days need attention. */
 export const STUCK_DEAL_DAYS = 3;
 /** "What changed" window — activity/new-deal horizon (hours). */
@@ -77,8 +82,26 @@ export interface BriefActivity {
 }
 
 /** Everything the briefing derives from, pre-computed for the prompt/fallback. */
+/**
+ * Contract metrics for the briefing, computed from the same deal rows the
+ * reports tab uses (see reportsSummary in pipeline.ts): open-deal MRR sums and
+ * per-stage counts. MRR is derived from the plan in code — never stored.
+ */
+export interface PipelineMetrics {
+  /** Open (non-closed) deal count. */
+  openDealCount: number;
+  /** Sum of MRR across open deals. */
+  totalPipelineMrr: number;
+  /** Sum of open-deal MRR × stage probability (weighted forecast). */
+  weightedPipelineMrr: number;
+  /** Deal count per stage (all stages, closed included). */
+  byStage: Record<string, number>;
+}
+
 export interface BriefingContext {
   deals: BriefDeal[];
+  /** Contract metrics (open count, MRR sums, per-stage counts). */
+  pipeline: PipelineMetrics;
   /** Activities in the last ACTIVITY_WINDOW_HOURS, newest first. */
   activities: BriefActivity[];
   newDeals: BriefDeal[];
@@ -101,6 +124,10 @@ export type BriefingResult =
       staleCount: number;
       recentActivityCount: number;
       dealCount: number;
+      /** Live contract metrics for the card's chips (never from the model). */
+      openDealCount: number;
+      totalPipelineMrr: number;
+      weightedPipelineMrr: number;
     }
   | { ok: false; reason: DbStatus };
 
@@ -124,6 +151,16 @@ export function isDealStale(deal: BriefDeal, now: Date = new Date()): boolean {
   const t = dealLastTouch(deal).getTime();
   if (!Number.isFinite(t)) return false;
   return now.getTime() - t >= STALE_DEAL_DAYS * MS_PER_DAY;
+}
+
+/**
+ * Whole days since the deal's effective last touch (min 1). Only meaningful
+ * for stale deals — the board's badge shows "Stale · {staleDays}d".
+ */
+export function staleDays(deal: Pick<BriefDeal, "last_activity_at" | "created_at">, now: Date = new Date()): number {
+  const t = dealLastTouch(deal).getTime();
+  if (!Number.isFinite(t)) return 1;
+  return Math.max(1, Math.floor((now.getTime() - t) / MS_PER_DAY));
 }
 
 /** True when a Proposal/Negotiation deal hasn't moved (updated_at) in STUCK_DEAL_DAYS. */
@@ -197,6 +234,7 @@ export function buildBriefingContext(
   const followUps = recent.filter((a) => a.summary != null && FOLLOW_UP_RE.test(a.summary));
   return {
     deals,
+    pipeline: buildPipelineMetrics(deals),
     activities: recent,
     newDeals,
     movedDeals,
@@ -204,6 +242,45 @@ export function buildBriefingContext(
     stuckDeals,
     followUps,
   };
+}
+
+/**
+ * Contract metrics straight from the deal rows + pricing constants — the same
+ * computation the reports tab uses (see reportsSummary). The AI never sees
+ * these as anything but given numbers; it cannot compute or invent them.
+ */
+export function buildPipelineMetrics(deals: BriefDeal[]): PipelineMetrics {
+  let openDealCount = 0;
+  let totalPipelineMrr = 0;
+  let weightedPipelineMrr = 0;
+  const byStage: Record<string, number> = {};
+  for (const d of deals) {
+    const mrr = PLAN_PRICING[d.plan].mrr;
+    byStage[d.stage] = (byStage[d.stage] ?? 0) + 1;
+    if (OPEN_STAGE_SET.has(d.stage)) {
+      openDealCount += 1;
+      totalPipelineMrr += mrr;
+      weightedPipelineMrr += mrr * (STAGE_PROBABILITY[d.stage] ?? 0);
+    }
+  }
+  return {
+    openDealCount,
+    totalPipelineMrr: roundMoney(totalPipelineMrr),
+    weightedPipelineMrr: roundMoney(weightedPipelineMrr),
+    byStage,
+  };
+}
+
+/** Round money to cents so displayed totals never carry float noise. */
+function roundMoney(v: number): number {
+  return Math.round(v * 100) / 100;
+}
+
+/** "$2,489" style — compact for prompts, fallback text, and card chips. */
+export function formatUsd(v: number): string {
+  const rounded = Math.round(v * 100) / 100;
+  const fixed = rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(2);
+  return `$${Number(fixed).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -235,10 +312,14 @@ function dealLine(d: BriefDeal): string {
 
 const OPENAI_MODEL = "gpt-4o-mini";
 
-const SYSTEM_PROMPT = `You are the sales operations assistant for Operion CRM, a small sales team that sells Operion subscriptions (Founder $249/mo, Studio $499/mo). Write the user's morning briefing from the CRM data below. Summarize ONLY what the data shows — never invent companies, names, dates, amounts, or facts, and never add advice the data doesn't support.
+const SYSTEM_PROMPT = `You are the sales operations assistant for Operion CRM, a small sales team that sells Operion subscriptions (Founder $249/mo, Studio $499/mo). Write the user's morning briefing from the CRM data below. Summarize ONLY what the data shows — never invent companies, names, dates, amounts, or facts, and never add advice the data doesn't support. Every number in the input is already computed from the database: quote it as given, do not recompute or round it differently.
 
-STRICT OUTPUT FORMAT — plain text only, exactly two sections. Every item is a bullet that starts with "- ":
+STRICT OUTPUT FORMAT — plain text only, exactly three sections. Every item is a bullet that starts with "- ":
 
+## Pipeline
+- one bullet: "<N> open deals · <$X> total pipeline MRR · <$Y> weighted MRR"
+- one bullet per stage with at least one deal, using the given counts, e.g. "- By stage: Lead 2 · Contacted 1 · Meeting 1 · Proposal 0 · Negotiation 1 · Closed Won 1 · Closed Lost 0"
+- If there are no open deals, write exactly: "- The pipeline is empty — no open deals."
 ## What changed in the last 24h
 - one short sentence per item
 ## Needs attention
@@ -247,12 +328,16 @@ STRICT OUTPUT FORMAT — plain text only, exactly two sections. Every item is a 
 Style rules:
 - 150-250 words total. Short, specific sentences a salesperson can act on.
 - Rewrite the data in your own words — do NOT copy or echo the raw "|" lines from the input, and never paste the input back.
+- The Pipeline section MUST use the exact open-deal count, MRR, and weighted-MRR figures from the input — they are the contract metrics and are never invented.
 - "What changed" covers new deals, deals updated in the last 24h (stage moves, edits, or logged activity), and logged activities. Name the company, plan, stage, and person when the data provides them.
-- "Needs attention" covers stale deals (no activity for 7+ days), deals stuck in Proposal/Negotiation (no movement for 3+ days), and activities from the last 24h that mention "follow up" or "call".
+- "Needs attention" is a prioritized to-do list: stale deals first (open, no activity for 5+ days — oldest first), then deals stuck in Proposal/Negotiation (no movement for 3+ days), then activities from the last 24h that mention "follow up" or "call". Say how many days without activity when the data gives it.
 - If a section has nothing in it, write exactly: - Nothing to flag.
 - No other sections, no markdown bold/italics, no asterisks, no raw data dumps.
 
 Example of the expected tone (not your data):
+## Pipeline
+- 3 open deals · $1,247 total pipeline MRR · $698 weighted MRR
+- By stage: Lead 1 · Contacted 0 · Meeting 1 · Proposal 0 · Negotiation 1 · Closed Won 2 · Closed Lost 1
 ## What changed in the last 24h
 - Acme Corp moved to Negotiation (Studio, $499/mo) — updated 2h ago by Dana.
 - Dana logged a call on Acme Corp: "Follow up on pricing".
@@ -265,6 +350,29 @@ export function buildModelContext(ctx: BriefingContext, now: Date = new Date()):
   const parts: string[] = [];
   const dealLines = (ds: BriefDeal[], fmt: (d: BriefDeal) => string) =>
     ds.length === 0 ? "- none" : ds.map((d) => `- ${fmt(d)}`).join("\n");
+
+  // Pipeline summary — the contract metrics, pre-computed from the DB. The
+  // model must quote these exactly; it never computes its own figures.
+  const stageOrder = [
+    "Lead",
+    "Contacted",
+    "Meeting",
+    "Proposal",
+    "Negotiation",
+    "Closed Won",
+    "Closed Lost",
+  ];
+  const stageLine = stageOrder
+    .map((s) => `${s} ${ctx.pipeline.byStage[s] ?? 0}`)
+    .join(" · ");
+  const openLine =
+    ctx.pipeline.openDealCount === 0
+      ? "The pipeline is empty — no open deals."
+      : `${ctx.pipeline.openDealCount} open deals · ${formatUsd(ctx.pipeline.totalPipelineMrr)} total pipeline MRR · ${formatUsd(ctx.pipeline.weightedPipelineMrr)} weighted MRR`;
+  parts.push("PIPELINE SUMMARY (computed from the database — quote exactly, never recompute):");
+  parts.push(`- ${openLine}`);
+  parts.push(`- By stage: ${stageLine}`);
+  parts.push("");
 
   parts.push("NEW DEALS (created in the last 24h):");
   parts.push(dealLines(ctx.newDeals, (d) => `${dealLine(d)} | created ${hoursAgoLabel(d.created_at, now)}`));
@@ -285,7 +393,7 @@ export function buildModelContext(ctx: BriefingContext, now: Date = new Date()):
           .join("\n"),
   );
   parts.push("");
-  parts.push("STALE DEALS (open, no activity for 7+ days):");
+  parts.push(`STALE DEALS (open, no activity for ${STALE_DEAL_DAYS}+ days):`);
   parts.push(
     dealLines(ctx.staleDeals, (d) => `${dealLine(d)} | last touch ${daysAgoLabel(dealLastTouch(d).toISOString(), now)}`),
   );
@@ -309,10 +417,31 @@ export function buildModelContext(ctx: BriefingContext, now: Date = new Date()):
 
 /** Static fallback — built purely from the DB, same section format as the model. */
 export function buildFallbackContent(ctx: BriefingContext, now: Date = new Date()): string {
+  const p = ctx.pipeline;
+  const stageOrder = [
+    "Lead",
+    "Contacted",
+    "Meeting",
+    "Proposal",
+    "Negotiation",
+    "Closed Won",
+    "Closed Lost",
+  ];
+  const stageLine = stageOrder
+    .map((s) => `${s} ${p.byStage[s] ?? 0}`)
+    .join(" · ");
+  const pipelineLines =
+    p.openDealCount === 0
+      ? ["- The pipeline is empty — no open deals.", `- By stage: ${stageLine}`]
+      : [
+          `- ${p.openDealCount} open deal${p.openDealCount === 1 ? "" : "s"} · ${formatUsd(p.totalPipelineMrr)} total pipeline MRR · ${formatUsd(p.weightedPipelineMrr)} weighted MRR`,
+          `- By stage: ${stageLine}`,
+        ];
+
   const changed: string[] = [];
   for (const d of ctx.newDeals) {
     changed.push(
-      `New deal: ${d.company} — ${d.plan} ($${PLAN_PRICING[d.plan].mrr}/mo), ${d.stage}, added ${hoursAgoLabel(d.created_at, now)}`,
+      `New deal: ${d.company} — ${d.plan} (${PLAN_PRICING[d.plan].mrr}/mo), ${d.stage}, added ${hoursAgoLabel(d.created_at, now)}`,
     );
   }
   for (const d of ctx.movedDeals) {
@@ -327,7 +456,7 @@ export function buildFallbackContent(ctx: BriefingContext, now: Date = new Date(
   const attention: string[] = [];
   for (const d of ctx.staleDeals) {
     attention.push(
-      `Stale: ${d.company} — no activity for ${daysAgoLabel(dealLastTouch(d).toISOString(), now)} (${d.stage})`,
+      `Stale: ${d.company} — no activity for ${staleDays(d, now)} day${staleDays(d, now) === 1 ? "" : "s"} (${d.stage})`,
     );
   }
   for (const d of ctx.stuckDeals) {
@@ -342,6 +471,8 @@ export function buildFallbackContent(ctx: BriefingContext, now: Date = new Date(
   }
 
   return [
+    "## Pipeline",
+    ...pipelineLines,
     "## What changed in the last 24h",
     ...(changed.length === 0 ? ["- Nothing changed in the last 24h."] : changed.map((c) => `- ${c}`)),
     "## Needs attention",
@@ -482,6 +613,9 @@ export const getBriefing = createServerFn({ method: "GET" }).handler(
           staleCount: ctx.staleDeals.length,
           recentActivityCount: ctx.activities.length,
           dealCount: ctx.deals.length,
+          openDealCount: ctx.pipeline.openDealCount,
+          totalPipelineMrr: ctx.pipeline.totalPipelineMrr,
+          weightedPipelineMrr: ctx.pipeline.weightedPipelineMrr,
         };
       }
 
@@ -518,6 +652,9 @@ export const getBriefing = createServerFn({ method: "GET" }).handler(
         staleCount: ctx.staleDeals.length,
         recentActivityCount: ctx.activities.length,
         dealCount: ctx.deals.length,
+        openDealCount: ctx.pipeline.openDealCount,
+        totalPipelineMrr: ctx.pipeline.totalPipelineMrr,
+        weightedPipelineMrr: ctx.pipeline.weightedPipelineMrr,
       };
     } catch (err) {
       console.error("[operion-crm] getBriefing failed:", err);
