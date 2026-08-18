@@ -733,11 +733,11 @@ export const updateDeal = createServerFn({ method: "POST" })
         });
       }
 
-      sets.push(`updated_at = ${args.length + 1}`);
+      sets.push(`updated_at = $${args.length + 1}`);
       args.push(new Date());
       await runDynamicQuery(
         db,
-        `update deals set ${sets.join(", ")} where id = ${args.length + 1}`,
+        `update deals set ${sets.join(", ")} where id = $${args.length + 1}`,
         [...args, data.dealId],
       );
       // Editing a deal can also close it — notify Operion when the persisted

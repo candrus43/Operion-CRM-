@@ -244,7 +244,7 @@ export const SCHEMA_SQL = `
   -- v6: deal activity timeline — one row per auto-logged deal mutation
   -- (created, stage_changed, plan_changed, owner_changed, note_added,
   -- contact_linked/unlinked, won, lost, deal_updated). actor_id is the user
-  -- who performed the action (null for system/backfill rows); detail holds the
+  -- who performed the action (null for system/backfill rows) - detail holds the
   -- old→new values, e.g. {"from":"Lead","to":"Meeting"} for stage_changed.
   CREATE TABLE IF NOT EXISTS deal_activities (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
